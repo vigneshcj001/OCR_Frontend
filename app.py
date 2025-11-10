@@ -12,7 +12,7 @@ if uploaded_file is not None:
     st.image(uploaded_file, caption="Uploaded Card", use_column_width=True)
     with st.spinner("Extracting text and inserting into MongoDB..."):
         files = {"file": uploaded_file.getvalue()}
-        response = requests.post("http://127.0.0.1:8000/upload_card", files=files)
+        response = requests.post("https://ocr-backend-ktb3.onrender.com/upload_card", files=files)
         
         if response.status_code == 200:
             data = response.json()
@@ -23,3 +23,4 @@ if uploaded_file is not None:
                 st.error("❌ Failed: " + str(data))
         else:
             st.error(f"Error: {response.status_code}")
+
