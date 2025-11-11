@@ -6,7 +6,11 @@ from io import BytesIO
 # ----------------------------
 # Page Configuration
 # ----------------------------
-st.set_page_config(page_title="Business Card OCR → MongoDB", page_icon="📇", layout="centered")
+st.set_page_config(
+    page_title="Business Card OCR → MongoDB",
+    page_icon="📇",
+    layout="wide",  # ✅ Wider layout
+)
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write(
@@ -17,7 +21,7 @@ st.write(
 # ----------------------------
 # Tabs: Upload & View All
 # ----------------------------
-tab1, tab2 = st.tabs(["Upload Card", "View All Cards"])
+tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 
 # ----------------------------
 # TAB 1: Upload Card
@@ -26,57 +30,62 @@ with tab1:
     uploaded_file = st.file_uploader("Upload Visiting Card", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
-        st.image(uploaded_file, caption="Uploaded Card", use_container_width=True)
+        # Create columns for balanced layout
+        col1, col2 = st.columns([1, 2])
 
-        with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
-            files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
-            try:
-                response = requests.post(
-                    "https://ocr-backend-usi7.onrender.com/upload_card", files=files
-                )
+        with col1:
+            st.image(uploaded_file, caption="Uploaded Card", width=250)  # ✅ Smaller image
 
-                if response.status_code == 200:
-                    data = response.json()
-                    if "data" in data:
-                        extracted = data["data"]
-                        st.success("✅ Inserted Successfully into MongoDB")
+        with col2:
+            with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
+                files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                try:
+                    response = requests.post(
+                        "https://ocr-backend-usi7.onrender.com/upload_card", files=files
+                    )
 
-                        df = pd.DataFrame([{
-                            "Name": extracted.get("name", ""),
-                            "Designation": extracted.get("designation", ""),
-                            "Company": extracted.get("company", ""),
-                            "Phone Numbers": ", ".join(extracted.get("phone_numbers", [])),
-                            "Email": extracted.get("email", ""),
-                            "Website": extracted.get("website", ""),
-                            "Address": extracted.get("address", ""),
-                            "Notes": extracted.get("additional_notes", ""),
-                            "Created At": extracted.get("created_at", "")
-                        }])
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "data" in data:
+                            extracted = data["data"]
+                            st.success("✅ Inserted Successfully into MongoDB")
 
-                        st.dataframe(df, use_container_width=True)
+                            df = pd.DataFrame([{
+                                "Name": extracted.get("name", ""),
+                                "Designation": extracted.get("designation", ""),
+                                "Company": extracted.get("company", ""),
+                                "Phone Numbers": ", ".join(extracted.get("phone_numbers", [])),
+                                "Email": extracted.get("email", ""),
+                                "Website": extracted.get("website", ""),
+                                "Address": extracted.get("address", ""),
+                                "Notes": extracted.get("additional_notes", ""),
+                                "Created At": extracted.get("created_at", "")
+                            }])
 
-                        # Excel Download
-                        def to_excel(df):
-                            output = BytesIO()
-                            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                                df.to_excel(writer, index=False, sheet_name="BusinessCard")
-                            return output.getvalue()
+                            st.dataframe(df, use_container_width=True)
 
-                        excel_data = to_excel(df)
+                            # Excel Download
+                            def to_excel(df):
+                                output = BytesIO()
+                                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                                    df.to_excel(writer, index=False, sheet_name="BusinessCard")
+                                return output.getvalue()
 
-                        st.download_button(
-                            label="📥 Download as Excel",
-                            data=excel_data,
-                            file_name="business_card_data.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                            excel_data = to_excel(df)
+
+                            st.download_button(
+                                label="📥 Download as Excel",
+                                data=excel_data,
+                                file_name="business_card_data.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            st.error("❌ Failed: " + str(data))
                     else:
-                        st.error("❌ Failed: " + str(data))
-                else:
-                    st.error(f"❌ API Error: {response.status_code}")
+                        st.error(f"❌ API Error: {response.status_code}")
 
-            except Exception as e:
-                st.error(f"❌ Request failed: {e}")
+                except Exception as e:
+                    st.error(f"❌ Request failed: {e}")
 
 # ----------------------------
 # TAB 2: View All Cards
@@ -93,7 +102,7 @@ with tab2:
                 st.dataframe(df_all, use_container_width=True)
 
                 # Editable Notes
-                st.subheader("Edit Notes")
+                st.subheader("📝 Edit Notes")
                 for idx, row in df_all.iterrows():
                     notes = st.text_area(
                         f"Notes for {row.get('name','')}",
@@ -130,7 +139,7 @@ with tab2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("No data found.")
+                st.warning("⚠️ No data found.")
         else:
             st.error(f"❌ API Error: {response.status_code}")
 
