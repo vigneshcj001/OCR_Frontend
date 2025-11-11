@@ -81,66 +81,54 @@ with tab1:
 # ----------------------------
 # TAB 2: View All Cards
 # ----------------------------
-# ----------------------------
-# TAB 2: View All Cards
-# ----------------------------
 with tab2:
     st.info("Fetching all business cards from MongoDB...")
+    try:
+        response = requests.get("https://ocr-backend-usi7.onrender.com/all_cards")
 
-    # Function to fetch latest data
-    def fetch_all_cards():
-        try:
-            response = requests.get("https://ocr-backend-usi7.onrender.com/all_cards")
-            if response.status_code == 200:
-                data = response.json()
-                if "data" in data:
-                    return pd.DataFrame(data["data"])
-        except:
-            return pd.DataFrame()
-        return pd.DataFrame()
+        if response.status_code == 200:
+            data = response.json()
+            if "data" in data:
+                df_all = pd.DataFrame(data["data"])
+                st.dataframe(df_all, use_container_width=True)
 
-    df_all = fetch_all_cards()
-
-    if not df_all.empty:
-        st.dataframe(df_all, use_container_width=True)
-
-        # Editable Notes
-        st.subheader("Edit Notes")
-        for idx, row in df_all.iterrows():
-            notes = st.text_area(
-                f"Notes for {row.get('name','')}",
-                value=row.get("additional_notes", ""),
-                key=str(row.get("_id"))
-            )
-            if st.button(f"Update Notes for {row.get('name','')}", key="btn_"+str(row.get("_id"))):
-                try:
-                    # Update notes via API
-                    requests.put(
-                        f"https://ocr-backend-usi7.onrender.com/update_notes/{row.get('_id')}",
-                        json={"additional_notes": notes}
+                # Editable Notes
+                st.subheader("Edit Notes")
+                for idx, row in df_all.iterrows():
+                    notes = st.text_area(
+                        f"Notes for {row.get('name','')}",
+                        value=row.get("additional_notes", ""),
+                        key=str(row.get("_id"))
                     )
-                    st.success("✅ Notes updated successfully")
+                    if st.button(f"Update Notes for {row.get('name','')}", key="btn_"+str(row.get("_id"))):
+                        try:
+                            requests.put(
+                                f"https://ocr-backend-usi7.onrender.com/update_notes/{row.get('_id')}",
+                                json={"additional_notes": notes}
+                            )
+                            st.success("✅ Notes updated successfully")
+                        except Exception as e:
+                            st.error(f"❌ Failed to update: {e}")
 
-                    # Re-fetch the updated dataframe from backend
-                    df_all = fetch_all_cards()
-                    st.dataframe(df_all, use_container_width=True)
+                # Excel download
+                def to_excel(df):
+                    output = BytesIO()
+                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="AllBusinessCards")
+                    return output.getvalue()
 
-                except Exception as e:
-                    st.error(f"❌ Failed to update: {e}")
+                excel_data = to_excel(df_all)
 
-        # Excel download
-        def to_excel(df):
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="AllBusinessCards")
-            return output.getvalue()
+                st.download_button(
+                    label="📥 Download All as Excel",
+                    data=excel_data,
+                    file_name="all_business_cards.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.warning("No data found.")
+        else:
+            st.error(f"❌ API Error: {response.status_code}")
 
-        excel_data = to_excel(df_all)
-        st.download_button(
-            label="📥 Download All as Excel",
-            data=excel_data,
-            file_name="all_business_cards.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-    else:
-        st.warning("No data found.")
+    except Exception as e:
+        st.error(f"❌ Failed to fetch data: {e}")
