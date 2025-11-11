@@ -9,19 +9,23 @@ st.write("Upload a visiting card image to extract details and insert into MongoD
 uploaded_file = st.file_uploader("Upload Visiting Card", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
-    st.image(uploaded_file, caption="Uploaded Card", use_column_width=True)
+    st.image(uploaded_file, caption="Uploaded Card", use_container_width=True)
+
     with st.spinner("Extracting text and inserting into MongoDB..."):
-        files = {"file": uploaded_file.getvalue()}
-        response = requests.post("https://ocr-backend-usi7.onrender.com/upload_card", files=files)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if "data" in data:
-                st.success("✅ Inserted Successfully into MongoDB")
-                st.json(data["data"])
+        # Prepare file as tuple (filename, filebytes)
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+
+        try:
+            response = requests.post("https://ocr-backend-usi7.onrender.com/upload_card", files=files)
+
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data:
+                    st.success("✅ Inserted Successfully into MongoDB")
+                    st.json(data["data"])
+                else:
+                    st.error("❌ Failed: " + str(data))
             else:
-                st.error("❌ Failed: " + str(data))
-        else:
-            st.error(f"Error: {response.status_code}")
-
-
+                st.error(f"❌ API Error: {response.status_code}")
+        except Exception as e:
+            st.error(f"❌ Request failed: {e}")
