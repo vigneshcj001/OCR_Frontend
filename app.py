@@ -23,9 +23,7 @@ tab1, tab2 = st.tabs(["Upload Card", "View All Cards"])
 # TAB 1: Upload Card
 # ----------------------------
 with tab1:
-    uploaded_file = st.file_uploader(
-        "Upload Visiting Card", type=["jpg", "jpeg", "png"]
-    )
+    uploaded_file = st.file_uploader("Upload Visiting Card", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
         st.image(uploaded_file, caption="Uploaded Card", use_container_width=True)
@@ -51,11 +49,13 @@ with tab1:
                             "Email": extracted.get("email", ""),
                             "Website": extracted.get("website", ""),
                             "Address": extracted.get("address", ""),
-                            "Notes": extracted.get("additional_notes", "")
+                            "Notes": extracted.get("additional_notes", ""),
+                            "Created At": extracted.get("created_at", "")
                         }])
 
                         st.dataframe(df, use_container_width=True)
 
+                        # Excel Download
                         def to_excel(df):
                             output = BytesIO()
                             with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -84,7 +84,6 @@ with tab1:
 with tab2:
     st.info("Fetching all business cards from MongoDB...")
     try:
-        # Replace with your FastAPI endpoint for fetching all records
         response = requests.get("https://ocr-backend-usi7.onrender.com/all_cards")
 
         if response.status_code == 200:
@@ -92,6 +91,24 @@ with tab2:
             if "data" in data:
                 df_all = pd.DataFrame(data["data"])
                 st.dataframe(df_all, use_container_width=True)
+
+                # Editable Notes
+                st.subheader("Edit Notes")
+                for idx, row in df_all.iterrows():
+                    notes = st.text_area(
+                        f"Notes for {row.get('name','')}",
+                        value=row.get("additional_notes", ""),
+                        key=str(row.get("_id"))
+                    )
+                    if st.button(f"Update Notes for {row.get('name','')}", key="btn_"+str(row.get("_id"))):
+                        try:
+                            requests.put(
+                                f"https://ocr-backend-usi7.onrender.com/update_notes/{row.get('_id')}",
+                                json={"additional_notes": notes}
+                            )
+                            st.success("✅ Notes updated successfully")
+                        except Exception as e:
+                            st.error(f"❌ Failed to update: {e}")
 
                 # Excel download
                 def to_excel(df):
