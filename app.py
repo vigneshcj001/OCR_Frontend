@@ -88,7 +88,7 @@ with tab2:
 
         if response.status_code == 200:
             data = response.json()
-            if "data" in data:
+            if "data" in data and data["data"]:
                 df_all = pd.DataFrame(data["data"])
                 st.dataframe(df_all, use_container_width=True)
 
@@ -102,11 +102,15 @@ with tab2:
                     )
                     if st.button(f"Update Notes for {row.get('name','')}", key="btn_"+str(row.get("_id"))):
                         try:
-                            requests.put(
+                            payload = {"additional_notes": notes}
+                            resp = requests.put(
                                 f"https://ocr-backend-usi7.onrender.com/update_notes/{row.get('_id')}",
-                                json={"additional_notes": notes}
+                                json=payload
                             )
-                            st.success("✅ Notes updated successfully")
+                            if resp.status_code == 200:
+                                st.success("✅ Notes updated successfully")
+                            else:
+                                st.error(f"❌ Update failed: {resp.text}")
                         except Exception as e:
                             st.error(f"❌ Failed to update: {e}")
 
