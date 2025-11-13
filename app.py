@@ -1,4 +1,5 @@
 # streamlit_app.py
+import os
 import streamlit as st
 import requests
 import pandas as pd
@@ -13,8 +14,9 @@ st.set_page_config(
     layout="wide",
 )
 
-# Change this to your backend URL (include protocol)
-BACKEND = st.secrets.get("BACKEND_URL", "https://ocr-backend-usi7.onrender.com")
+# Use environment variable for backend (works on Render, Heroku, local dev)
+# Set BACKEND_URL in your service's environment variables to your backend URL.
+BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-usi7.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -53,7 +55,7 @@ with tab1:
             with st.spinner("Processing..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
-                    response = requests.post(f"{BACKEND}/upload_card", files=files)
+                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=60)
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
@@ -122,7 +124,7 @@ with tab1:
         }
         with st.spinner("Saving..."):
             try:
-                r = requests.post(f"{BACKEND}/create_card", json=payload)
+                r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
             except Exception as e:
                 st.error(f"Failed to reach backend: {e}")
                 r = None
@@ -158,7 +160,7 @@ with tab2:
     st.info("Fetching all business cards...")
 
     try:
-        response = requests.get(f"{BACKEND}/all_cards")
+        response = requests.get(f"{BACKEND}/all_cards", timeout=30)
         data = response.json()
     except Exception as e:
         st.error(f"Failed to fetch data: {e}")
@@ -227,7 +229,7 @@ with tab2:
                 if change_set:
                     card_id = ids[i]
                     try:
-                        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set)
+                        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set, timeout=30)
                         if r.status_code in (200, 201):
                             updates += 1
                     except Exception as e:
@@ -243,5 +245,3 @@ with tab2:
                 st.info("No changes detected.")
     else:
         st.warning("No cards found.")
-
-
