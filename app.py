@@ -1,4 +1,3 @@
-# streamlit_app.py
 import os
 import streamlit as st
 import requests
@@ -66,7 +65,8 @@ with tab1:
                         st.success("Inserted Successfully!")
 
                         card = res["data"]
-                        df = pd.DataFrame([card])
+                        # Create DataFrame and hide _id if present
+                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
 
                         st.dataframe(df, use_container_width=True)
 
@@ -134,7 +134,8 @@ with tab1:
                 if "data" in res:
                     st.success("Inserted Successfully!")
                     card = res["data"]
-                    df = pd.DataFrame([card])
+                    # Hide _id before showing or downloading
+                    df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                     st.dataframe(df, use_container_width=True)
 
                     st.download_button(
