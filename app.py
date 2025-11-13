@@ -103,8 +103,9 @@ with tab1:
         else:
             st.info("Upload a card to see preview here.")
 
+
 # ----------------------------
-# TAB 2: View All Cards (full inline edit + top download)
+# TAB 2: View All Cards (hide _id, inline edit + top download)
 # ----------------------------
 with tab2:
     st.info("Fetching all business cards from MongoDB...")
@@ -116,12 +117,14 @@ with tab2:
             if "data" in data and data["data"]:
                 df_all = pd.DataFrame(data["data"])
 
-                # Ensure _id is string
+                # Ensure _id is string and preserve order for mapping
                 if "_id" in df_all.columns:
                     df_all["_id"] = df_all["_id"].astype(str)
                 else:
-                    # If backend changed, ensure there's an id column
                     df_all["_id"] = df_all.index.astype(str)
+
+                # Keep ids for mapping edited rows -> DB documents
+                ids = df_all["_id"].tolist()
 
                 # Convert list columns to editable comma-separated strings for the editor
                 def list_to_csv(x):
@@ -133,14 +136,17 @@ with tab2:
                     if col in df_all.columns:
                         df_all[col] = df_all[col].apply(list_to_csv)
 
-                # --- Download all button at the top ---
+                # Prepare editor dataframe (hide _id from user)
+                editor_df = df_all.drop(columns=["_id"])
+
+                # --- Download all button at the top (based on visible columns) ---
                 def to_excel(df):
                     output = BytesIO()
                     with pd.ExcelWriter(output, engine="openpyxl") as writer:
                         df.to_excel(writer, index=False, sheet_name="AllBusinessCards")
                     return output.getvalue()
 
-                excel_data = to_excel(df_all)
+                excel_data = to_excel(df_all.drop(columns=["_id"]))
                 st.download_button(
                     label="📥 Download All as Excel",
                     data=excel_data,
@@ -154,21 +160,20 @@ with tab2:
 
                 # Use experimental_data_editor or data_editor depending on Streamlit version
                 try:
-                    edited = st.experimental_data_editor(df_all, num_rows="dynamic", use_container_width=True)
+                    edited = st.experimental_data_editor(editor_df, num_rows="dynamic", use_container_width=True)
                 except Exception:
-                    edited = st.data_editor(df_all, num_rows="dynamic", use_container_width=True)
+                    edited = st.data_editor(editor_df, num_rows="dynamic", use_container_width=True)
 
                 # Save changes button
                 if st.button("💾 Save Changes"):
                     updates = []
-                    for i in range(len(df_all)):
-                        orig = df_all.iloc[i]
+                    # edited has same row order as editor_df, which matches ids list
+                    for i in range(len(editor_df)):
+                        orig = editor_df.iloc[i]
                         new = edited.iloc[i]
 
                         changed_cols = {}
-                        for col in df_all.columns:
-                            if col == "_id":
-                                continue
+                        for col in editor_df.columns:
                             orig_val = "" if pd.isna(orig[col]) else orig[col]
                             new_val = "" if pd.isna(new[col]) else new[col]
                             if str(orig_val) != str(new_val):
@@ -183,7 +188,7 @@ with tab2:
                                     changed_cols[col] = new_val
 
                         if changed_cols:
-                            card_id = str(orig["_id"])
+                            card_id = ids[i]
                             try:
                                 resp = requests.patch(
                                     f"https://ocr-backend-usi7.onrender.com/update_card/{card_id}",
@@ -210,10 +215,10 @@ with tab2:
                             for card_id, status, detail in errs:
                                 st.write(f"- Card {card_id}: {status} — {detail}")
 
-                # Optional: show the current dataframe snapshot below
+                # Optional: show the current dataframe snapshot below (without _id)
                 st.markdown("---")
                 st.write("Current data snapshot:")
-                st.dataframe(df_all, use_container_width=True)
+                st.dataframe(df_all.drop(columns=["_id"]), use_container_width=True)
 
             else:
                 st.warning("⚠️ No data found.")
