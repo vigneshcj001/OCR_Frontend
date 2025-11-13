@@ -12,6 +12,7 @@ st.set_page_config(
     layout="wide",
 )
 
+# Change this to your backend URL
 BACKEND = "https://ocr-backend-usi7.onrender.com"
 
 st.title("📇 Business Card OCR → MongoDB")
@@ -163,8 +164,11 @@ with tab2:
                             updates += 1
 
                 if updates > 0:
-                    st.success(f"Updated {updates} card(s). Refreshing...")
-                    st.experimental_rerun()
+                    st.success(f"✅ Updated {updates} card(s). Refreshing...")
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
                 else:
                     st.info("No changes detected.")
 
