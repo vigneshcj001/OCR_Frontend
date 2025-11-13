@@ -7,16 +7,21 @@ from io import BytesIO
 # Page Configuration
 # ----------------------------
 st.set_page_config(
-    page_title="Business Card OCR → MongoDB",
+    page_title="Business Card OCR → MongoDB (OpenOCR)",
     page_icon="📇",
-    layout="wide",  # ✅ Wider layout
+    layout="wide",
 )
 
-st.title("📇 Business Card OCR → MongoDB")
+st.title("📇 Business Card OCR → MongoDB (OpenOCR)")
 st.write(
-    "Upload a visiting card image, extract details using FastAPI + Tesseract, "
+    "Upload a visiting card image, extract details using FastAPI + OpenOCR, "
     "and store them in MongoDB. You can also download the extracted data as Excel."
 )
+
+# ----------------------------
+# API BASE URL (update if deployed)
+# ----------------------------
+API_BASE = "https://ocr-backend-usi7.onrender.com"  # change to your deployed backend if needed
 
 # ----------------------------
 # Tabs: Upload & View All
@@ -30,25 +35,23 @@ with tab1:
     uploaded_file = st.file_uploader("Upload Visiting Card", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
-        # Create columns for balanced layout
         col1, col2 = st.columns([1, 2])
 
         with col1:
-            st.image(uploaded_file, caption="Uploaded Card", width=250)  # ✅ Smaller image
+            st.image(uploaded_file, caption="Uploaded Card", width=250)
 
         with col2:
             with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
-                    response = requests.post(
-                        "https://ocr-backend-usi7.onrender.com/upload_card", files=files
-                    )
+                    response = requests.post(f"{API_BASE}/ocr/business-card", files=files)
 
                     if response.status_code == 200:
                         data = response.json()
-                        if "data" in data:
-                            extracted = data["data"]
-                            st.success("✅ Inserted Successfully into MongoDB")
+
+                        if "extracted_data" in data:
+                            extracted = data["extracted_data"]
+                            st.success("✅ Extracted Successfully using OpenOCR")
 
                             df = pd.DataFrame([{
                                 "Name": extracted.get("name", ""),
@@ -58,8 +61,8 @@ with tab1:
                                 "Email": extracted.get("email", ""),
                                 "Website": extracted.get("website", ""),
                                 "Address": extracted.get("address", ""),
-                                "Notes": extracted.get("additional_notes", ""),
-                                "Created At": extracted.get("created_at", "")
+                                "Social Links": ", ".join(extracted.get("social_links", [])),
+                                "Created At": data.get("created_at", "")
                             }])
 
                             st.dataframe(df, use_container_width=True)
@@ -79,49 +82,27 @@ with tab1:
                                 file_name="business_card_data.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
+
                         else:
-                            st.error("❌ Failed: " + str(data))
+                            st.error(f"❌ Unexpected response: {data}")
                     else:
-                        st.error(f"❌ API Error: {response.status_code}")
+                        st.error(f"❌ API Error: {response.status_code} - {response.text}")
 
                 except Exception as e:
                     st.error(f"❌ Request failed: {e}")
 
 # ----------------------------
-# TAB 2: View All Cards
+# TAB 2: View All Cards (optional if MongoDB enabled)
 # ----------------------------
 with tab2:
-    st.info("Fetching all business cards from MongoDB...")
+    st.info("Fetching all business cards from MongoDB (if backend has MongoDB enabled)...")
     try:
-        response = requests.get("https://ocr-backend-usi7.onrender.com/all_cards")
-
+        response = requests.get(f"{API_BASE}/all_cards")
         if response.status_code == 200:
             data = response.json()
             if "data" in data and data["data"]:
                 df_all = pd.DataFrame(data["data"])
                 st.dataframe(df_all, use_container_width=True)
-
-                # Editable Notes
-                st.subheader("📝 Edit Notes")
-                for idx, row in df_all.iterrows():
-                    notes = st.text_area(
-                        f"Notes for {row.get('name','')}",
-                        value=row.get("additional_notes", ""),
-                        key=str(row.get("_id"))
-                    )
-                    if st.button(f"Update Notes for {row.get('name','')}", key="btn_"+str(row.get("_id"))):
-                        try:
-                            payload = {"additional_notes": notes}
-                            resp = requests.put(
-                                f"https://ocr-backend-usi7.onrender.com/update_notes/{row.get('_id')}",
-                                json=payload
-                            )
-                            if resp.status_code == 200:
-                                st.success("✅ Notes updated successfully")
-                            else:
-                                st.error(f"❌ Update failed: {resp.text}")
-                        except Exception as e:
-                            st.error(f"❌ Failed to update: {e}")
 
                 # Excel download
                 def to_excel(df):
@@ -142,6 +123,5 @@ with tab2:
                 st.warning("⚠️ No data found.")
         else:
             st.error(f"❌ API Error: {response.status_code}")
-
     except Exception as e:
         st.error(f"❌ Failed to fetch data: {e}")
