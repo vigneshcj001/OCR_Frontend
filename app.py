@@ -12,218 +12,164 @@ st.set_page_config(
     layout="wide",
 )
 
+BACKEND = "https://ocr-backend-usi7.onrender.com"
+
 st.title("📇 Business Card OCR → MongoDB")
-st.write(
-    "Upload a visiting card image, extract details using FastAPI + Tesseract, "
-    "and store them in MongoDB. You can also download the extracted data as Excel."
-)
+st.write("Upload → Extract OCR → Store → Edit → Download")
 
 # ----------------------------
-# Tabs: Upload & View All
+# Tabs
 # ----------------------------
 tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 
-# ----------------------------
-# TAB 1: Upload Card
-# ----------------------------
+# ========================================================================
+# TAB 1 — Upload Card
+# ========================================================================
 with tab1:
-    col_preview, col_uploader = st.columns([3, 7])
+    col_preview, col_upload = st.columns([3, 7])
 
-    # RIGHT: uploader & actions
-    with col_uploader:
+    # Upload column
+    with col_upload:
         uploaded_file = st.file_uploader(
-            "Drag and drop file here\nLimit 200MB per file • JPG, JPEG, PNG",
+            "Drag and drop file here\nLimit 200MB • JPG, JPEG, PNG",
             type=["jpg", "jpeg", "png"]
         )
 
-        if uploaded_file is not None:
+        if uploaded_file:
             st.write("Upload progress:")
             st.progress(70)
 
-            with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
+            with st.spinner("Processing..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                response = requests.post(f"{BACKEND}/upload_card", files=files)
 
-                try:
-                    response = requests.post(
-                        "https://ocr-backend-usi7.onrender.com/upload_card",
-                        files=files,
-                        timeout=60
-                    )
+                if response.status_code == 200:
+                    res = response.json()
+                    if "data" in res:
+                        st.success("Inserted Successfully!")
 
-                    if response.status_code == 200:
-                        data = response.json()
+                        card = res["data"]
+                        df = pd.DataFrame([card])
 
-                        if "data" in data:
-                            extracted = data["data"]
-                            st.success("✅ Inserted Successfully into MongoDB")
+                        st.dataframe(df, use_container_width=True)
 
-                            df = pd.DataFrame([{
-                                "Name": extracted.get("name", ""),
-                                "Designation": extracted.get("designation", ""),
-                                "Company": extracted.get("company", ""),
-                                "Phone Numbers": ", ".join(extracted.get("phone_numbers", [])),
-                                "Email": extracted.get("email", ""),
-                                "Website": extracted.get("website", ""),
-                                "Address": extracted.get("address", ""),
-                                "Notes": extracted.get("additional_notes", ""),
-                                "Created At": extracted.get("created_at", "")
-                            }])
+                        # Download Excel
+                        def to_excel(df):
+                            output = BytesIO()
+                            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                                df.to_excel(writer, index=False)
+                            return output.getvalue()
 
-                            st.dataframe(df, use_container_width=True)
+                        st.download_button(
+                            "📥 Download as Excel",
+                            to_excel(df),
+                            "business_card.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+                else:
+                    st.error("Upload failed")
 
-                            # Excel export
-                            def to_excel(df):
-                                output = BytesIO()
-                                with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                                    df.to_excel(writer, index=False)
-                                return output.getvalue()
-
-                            st.download_button(
-                                "📥 Download as Excel",
-                                to_excel(df),
-                                "business_card.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        else:
-                            st.error("❌ Unexpected server response.")
-                    else:
-                        st.error(f"❌ API error: {response.status_code}")
-                except Exception as e:
-                    st.error(f"❌ Request failed: {e}")
-
-    # LEFT: preview
+    # Preview column
     with col_preview:
         st.markdown("### Preview")
-        if uploaded_file is not None:
-            st.image(
-                uploaded_file,
-                caption="Uploaded Card Preview",
-                use_container_width=True
-            )
+        if uploaded_file:
+            st.image(uploaded_file, use_container_width=True)
         else:
-            st.info("Upload a card to see preview here.")
+            st.info("Upload a card to preview here.")
 
-
-# ----------------------------
-# TAB 2: View All Cards (hide _id, inline edit + top download)
-# ----------------------------
+# ========================================================================
+# TAB 2 — View & Edit All Cards
+# ========================================================================
 with tab2:
-    st.info("Fetching all business cards from MongoDB...")
+    st.info("Fetching all business cards...")
+
     try:
-        response = requests.get("https://ocr-backend-usi7.onrender.com/all_cards", timeout=30)
+        response = requests.get(f"{BACKEND}/all_cards")
+        data = response.json()
 
-        if response.status_code == 200:
-            data = response.json()
-            if "data" in data and data["data"]:
-                df_all = pd.DataFrame(data["data"])
+        if "data" in data and data["data"]:
+            df_all = pd.DataFrame(data["data"])
 
-                # Ensure _id is string and preserve order for mapping
-                if "_id" in df_all.columns:
-                    df_all["_id"] = df_all["_id"].astype(str)
-                else:
-                    df_all["_id"] = df_all.index.astype(str)
+            # Remove _id from UI but keep mapping
+            ids = df_all["_id"].astype(str).tolist()
+            df_all["_id"] = df_all["_id"].astype(str)
 
-                # Keep ids for mapping edited rows -> DB documents
-                ids = df_all["_id"].tolist()
+            # Convert list fields into editable CSV strings
+            def to_csv(v):
+                return ", ".join(v) if isinstance(v, list) else v
 
-                # Convert list columns to editable comma-separated strings for the editor
-                def list_to_csv(x):
-                    if isinstance(x, list):
-                        return ", ".join(x)
-                    return x
+            for col in ["phone_numbers", "social_links"]:
+                if col in df_all.columns:
+                    df_all[col] = df_all[col].apply(to_csv)
 
-                for col in ("phone_numbers", "social_links"):
-                    if col in df_all.columns:
-                        df_all[col] = df_all[col].apply(list_to_csv)
+            # Prepare editor table (hide _id)
+            visible_df = df_all.drop(columns=["_id"])
 
-                # Prepare editor dataframe (hide _id from user)
-                editor_df = df_all.drop(columns=["_id"])
+            # Download button (top)
+            def all_to_excel(df):
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False)
+                return output.getvalue()
 
-                # --- Download all button at the top (based on visible columns) ---
-                def to_excel(df):
-                    output = BytesIO()
-                    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                        df.to_excel(writer, index=False, sheet_name="AllBusinessCards")
-                    return output.getvalue()
+            st.download_button(
+                "📥 Download All as Excel",
+                all_to_excel(visible_df),
+                "all_business_cards.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
-                excel_data = to_excel(df_all.drop(columns=["_id"]))
-                st.download_button(
-                    label="📥 Download All as Excel",
-                    data=excel_data,
-                    file_name="all_business_cards.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_all_top"
+            st.markdown("### 📝 Edit Cards Inline")
+            st.write("Make changes → then click **Save Changes** below.")
+
+            try:
+                edited = st.experimental_data_editor(
+                    visible_df,
+                    use_container_width=True,
+                    num_rows="dynamic"
+                )
+            except:
+                edited = st.data_editor(
+                    visible_df,
+                    use_container_width=True,
+                    num_rows="dynamic"
                 )
 
-                st.markdown("### 🗂️ All Cards (editable)")
-                st.write("Edit cells directly. When finished click **Save Changes** to persist edits to MongoDB.")
+            # Save button
+            if st.button("💾 Save Changes"):
+                updates = 0
 
-                # Use experimental_data_editor or data_editor depending on Streamlit version
-                try:
-                    edited = st.experimental_data_editor(editor_df, num_rows="dynamic", use_container_width=True)
-                except Exception:
-                    edited = st.data_editor(editor_df, num_rows="dynamic", use_container_width=True)
+                for i in range(len(edited)):
+                    orig = visible_df.iloc[i]
+                    new = edited.iloc[i]
 
-                # Save changes button
-                if st.button("💾 Save Changes"):
-                    updates = []
-                    # edited has same row order as editor_df, which matches ids list
-                    for i in range(len(editor_df)):
-                        orig = editor_df.iloc[i]
-                        new = edited.iloc[i]
+                    change_set = {}
 
-                        changed_cols = {}
-                        for col in editor_df.columns:
-                            orig_val = "" if pd.isna(orig[col]) else orig[col]
-                            new_val = "" if pd.isna(new[col]) else new[col]
-                            if str(orig_val) != str(new_val):
-                                # Convert CSV strings back to lists for list fields
-                                if col in ("phone_numbers", "social_links"):
-                                    if isinstance(new_val, str):
-                                        parsed = [x.strip() for x in new_val.split(",") if x.strip()]
-                                        changed_cols[col] = parsed
-                                    else:
-                                        changed_cols[col] = new_val
-                                else:
-                                    changed_cols[col] = new_val
+                    for col in visible_df.columns:
+                        o = "" if pd.isna(orig[col]) else orig[col]
+                        n = "" if pd.isna(new[col]) else new[col]
+                        if str(o) != str(n):
+                            # Restore list fields
+                            if col in ["phone_numbers", "social_links"]:
+                                items = [x.strip() for x in n.split(",") if x.strip()]
+                                change_set[col] = items
+                            else:
+                                change_set[col] = n
 
-                        if changed_cols:
-                            card_id = ids[i]
-                            try:
-                                resp = requests.patch(
-                                    f"https://ocr-backend-usi7.onrender.com/update_card/{card_id}",
-                                    json=changed_cols,
-                                    timeout=15
-                                )
-                                if resp.status_code in (200, 201):
-                                    updates.append((card_id, "OK", list(changed_cols.keys())))
-                                else:
-                                    updates.append((card_id, f"ERR {resp.status_code}", resp.text))
-                            except Exception as e:
-                                updates.append((card_id, f"ERR {e}", None))
+                    if change_set:
+                        card_id = ids[i]
+                        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set)
+                        if r.status_code in (200, 201):
+                            updates += 1
 
-                    # User feedback
-                    if not updates:
-                        st.info("No changes detected.")
-                    else:
-                        ok = [u for u in updates if u[1] == "OK"]
-                        errs = [u for u in updates if u[1] != "OK"]
-                        if ok:
-                            st.success(f"✅ Updated {len(ok)} card(s).")
-                        if errs:
-                            st.error(f"⚠️ {len(errs)} update(s) failed. See details below.")
-                            for card_id, status, detail in errs:
-                                st.write(f"- Card {card_id}: {status} — {detail}")
+                if updates > 0:
+                    st.success(f"Updated {updates} card(s). Refreshing...")
+                    st.experimental_rerun()
+                else:
+                    st.info("No changes detected.")
 
-                # Optional: show the current dataframe snapshot below (without _id)
-                st.markdown("---")
-                st.write("Current data snapshot:")
-                st.dataframe(df_all.drop(columns=["_id"]), use_container_width=True)
-
-            else:
-                st.warning("⚠️ No data found.")
         else:
-            st.error(f"❌ API Error: {response.status_code}")
+            st.warning("No cards found.")
 
     except Exception as e:
-        st.error(f"❌ Failed to fetch data: {e}")
+        st.error(f"Failed to fetch data: {e}")
