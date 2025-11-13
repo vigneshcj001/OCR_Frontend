@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # Change this to your backend URL (include protocol)
-BACKEND = st.secrets.get("BACKEND_URL", "http://localhost:8000")
+BACKEND = st.secrets.get("BACKEND_URL")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -243,3 +243,4 @@ with tab2:
                 st.info("No changes detected.")
     else:
         st.warning("No cards found.")
+
