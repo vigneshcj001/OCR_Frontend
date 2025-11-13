@@ -27,16 +27,27 @@ tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 # TAB 1: Upload Card
 # ----------------------------
 with tab1:
-    uploaded_file = st.file_uploader("Upload Visiting Card", type=["jpg", "jpeg", "png"])
+    # Two columns: left ~30% (preview), right ~70% (uploader + info)
+    col_preview, col_uploader = st.columns([3, 7])
 
-    if uploaded_file is not None:
-        # Create columns for balanced layout
-        col1, col2 = st.columns([1, 2])
+    # uploader sits in the right (larger) column
+    with col_uploader:
+        st.markdown("**Drag and drop file here**  \nLimit 200MB per file • JPG, JPEG, PNG")
+        uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"])
 
-        with col1:
-            st.image(uploaded_file, caption="Uploaded Card", width=250)  # ✅ Smaller image
+        if uploaded_file is not None:
+            # File meta
+            file_name = uploaded_file.name
+            file_size_kb = round(len(uploaded_file.getvalue()) / 1024, 1)
 
-        with col2:
+            st.write(f"**File:** {file_name}")
+            st.write(f"**Size:** {file_size_kb} KB")
+
+            # show an example progress bar at 70% (you can update dynamically if needed)
+            st.write("Upload progress:")
+            st.progress(70)  # use integer 0-100
+
+            # call the API and show extraction results (kept largely same as your original)
             with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
                 try:
@@ -86,6 +97,16 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"❌ Request failed: {e}")
+
+    # preview sits in the left (narrow) column
+    with col_preview:
+        st.markdown("**Preview**")
+        if uploaded_file is not None:
+            # show preview that fills the left column (approx 30% of page)
+            st.image(uploaded_file, use_column_width=True, caption="Uploaded Card Preview")
+        else:
+            # placeholder preview area
+            st.info("No file uploaded yet — preview will appear here.")
 
 # ----------------------------
 # TAB 2: View All Cards
@@ -145,3 +166,4 @@ with tab2:
 
     except Exception as e:
         st.error(f"❌ Failed to fetch data: {e}")
+
