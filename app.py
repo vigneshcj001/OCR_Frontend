@@ -27,33 +27,42 @@ tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 # TAB 1: Upload Card
 # ----------------------------
 with tab1:
-    # Two columns: left ~30% (preview), right ~70% (uploader + info)
+
+    # Two columns: 30% preview (left), 70% uploader (right)
     col_preview, col_uploader = st.columns([3, 7])
 
-    # uploader sits in the right (larger) column
+    # ------------------------
+    # RIGHT COLUMN (Uploader)
+    # ------------------------
     with col_uploader:
-        st.markdown("**Drag and drop file here**  \nLimit 200MB per file • JPG, JPEG, PNG")
-        uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"])
+
+        uploaded_file = st.file_uploader(
+            "Drag and drop file here\nLimit 200MB per file • JPG, JPEG, PNG",
+            type=["jpg", "jpeg", "png"]
+        )
 
         if uploaded_file is not None:
 
-            # Example static progress bar
+            # static progress example
             st.write("Upload progress:")
-            st.progress(70)  # integer 0 - 100
+            st.progress(70)
 
             with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
+
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
 
                 try:
                     response = requests.post(
-                        "https://ocr-backend-usi7.onrender.com/upload_card", 
+                        "https://ocr-backend-usi7.onrender.com/upload_card",
                         files=files
                     )
 
                     if response.status_code == 200:
                         data = response.json()
+
                         if "data" in data:
                             extracted = data["data"]
+
                             st.success("✅ Inserted Successfully into MongoDB")
 
                             df = pd.DataFrame([{
@@ -70,37 +79,44 @@ with tab1:
 
                             st.dataframe(df, use_container_width=True)
 
-                            # Excel Download
+                            # Excel export
                             def to_excel(df):
+                                from io import BytesIO
                                 output = BytesIO()
                                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                                    df.to_excel(writer, index=False, sheet_name="BusinessCard")
+                                    df.to_excel(writer, index=False)
                                 return output.getvalue()
 
-                            excel_data = to_excel(df)
-
                             st.download_button(
-                                label="📥 Download as Excel",
-                                data=excel_data,
-                                file_name="business_card_data.xlsx",
+                                "📥 Download as Excel",
+                                to_excel(df),
+                                "business_card.xlsx",
                                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             )
+
                         else:
-                            st.error("❌ Failed: " + str(data))
+                            st.error("❌ Unexpected server response.")
+
                     else:
-                        st.error(f"❌ API Error: {response.status_code}")
+                        st.error(f"❌ API error: {response.status_code}")
 
                 except Exception as e:
                     st.error(f"❌ Request failed: {e}")
 
-    # preview in the left (30%) column
+    # ------------------------
+    # LEFT COLUMN (Preview)
+    # ------------------------
     with col_preview:
-        st.markdown("**Preview**")
-        if uploaded_file is not None:
-            st.image(uploaded_file, caption="Uploaded Card Preview", use_container_width=True)
-        else:
-            st.info("No file uploaded yet — preview will appear here.")
+        st.markdown("### Preview")
 
+        if uploaded_file is not None:
+            st.image(
+                uploaded_file,
+                caption="Uploaded Card Preview",
+                use_container_width=True     # ✔️ Correct replacement
+            )
+        else:
+            st.info("Upload a card to see preview here.")
 # ----------------------------
 # TAB 2: View All Cards
 # ----------------------------
@@ -159,5 +175,6 @@ with tab2:
 
     except Exception as e:
         st.error(f"❌ Failed to fetch data: {e}")
+
 
 
