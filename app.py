@@ -36,23 +36,18 @@ with tab1:
         uploaded_file = st.file_uploader("", type=["jpg", "jpeg", "png"])
 
         if uploaded_file is not None:
-            # File meta
-            file_name = uploaded_file.name
-            file_size_kb = round(len(uploaded_file.getvalue()) / 1024, 1)
 
-            st.write(f"**File:** {file_name}")
-            st.write(f"**Size:** {file_size_kb} KB")
-
-            # show an example progress bar at 70% (you can update dynamically if needed)
+            # Example static progress bar
             st.write("Upload progress:")
-            st.progress(70)  # use integer 0-100
+            st.progress(70)  # integer 0 - 100
 
-            # call the API and show extraction results (kept largely same as your original)
             with st.spinner("🔍 Extracting text and inserting into MongoDB..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+
                 try:
                     response = requests.post(
-                        "https://ocr-backend-usi7.onrender.com/upload_card", files=files
+                        "https://ocr-backend-usi7.onrender.com/upload_card", 
+                        files=files
                     )
 
                     if response.status_code == 200:
@@ -98,14 +93,12 @@ with tab1:
                 except Exception as e:
                     st.error(f"❌ Request failed: {e}")
 
-    # preview sits in the left (narrow) column
+    # preview in the left (30%) column
     with col_preview:
         st.markdown("**Preview**")
         if uploaded_file is not None:
-            # show preview that fills the left column (approx 30% of page)
-            st.image(uploaded_file, use_column_width=True, caption="Uploaded Card Preview")
+            st.image(uploaded_file, caption="Uploaded Card Preview", use_container_width=True)
         else:
-            # placeholder preview area
             st.info("No file uploaded yet — preview will appear here.")
 
 # ----------------------------
@@ -166,4 +159,5 @@ with tab2:
 
     except Exception as e:
         st.error(f"❌ Failed to fetch data: {e}")
+
 
