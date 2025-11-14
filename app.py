@@ -33,12 +33,10 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-
 # ========================================================================
 # TAB 1 — Upload Card + Manual Form
 # ========================================================================
 with tab1:
-
     col_preview, col_upload = st.columns([3, 7])
 
     # Upload column
@@ -54,13 +52,8 @@ with tab1:
 
             with st.spinner("Processing..."):
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
-
                 try:
-                    response = requests.post(
-                        f"{BACKEND}/upload_card",
-                        files=files,
-                        timeout=60
-                    )
+                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=60)
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
@@ -69,9 +62,10 @@ with tab1:
                     res = response.json()
                     if "data" in res:
                         st.success("Inserted Successfully!")
-                        card = res["data"]
 
+                        card = res["data"]
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+
                         st.dataframe(df, use_container_width=True)
 
                         st.download_button(
@@ -112,64 +106,56 @@ with tab1:
         address = st.text_area("Address")
         social_links = st.text_input("Social links (comma separated)")
         additional_notes = st.text_area("Notes / extra info")
-
         submitted = st.form_submit_button("📤 Create Card (manual)")
 
-        if submitted:
-            payload = {
-                "name": name,
-                "designation": designation,
-                "company": company,
-                "phone_numbers": phones,
-                "email": email,
-                "website": website,
-                "address": address,
-                "social_links": social_links,
-                "additional_notes": additional_notes,
-            }
+    if submitted:
+        payload = {
+            "name": name,
+            "designation": designation,
+            "company": company,
+            "phone_numbers": phones,
+            "email": email,
+            "website": website,
+            "address": address,
+            "social_links": social_links,
+            "additional_notes": additional_notes,
+        }
+        with st.spinner("Saving..."):
+            try:
+                r = requests.post(f"{BACKEND}/create_card", json=payload, timeout=30)
+            except Exception as e:
+                st.error(f"Failed to reach backend: {e}")
+                r = None
 
-            with st.spinner("Saving..."):
-                try:
-                    r = requests.post(
-                        f"{BACKEND}/create_card",
-                        json=payload,
-                        timeout=30
+            if r and r.status_code in (200, 201):
+                res = r.json()
+                if "data" in res:
+                    st.success("Inserted Successfully!")
+                    card = res["data"]
+
+                    df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                    st.dataframe(df, use_container_width=True)
+
+                    st.download_button(
+                        "📥 Download as Excel",
+                        to_excel_bytes(df),
+                        "business_card_manual.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-                except Exception as e:
-                    st.error(f"Failed to reach backend: {e}")
-                    r = None
-
-                if r and r.status_code in (200, 201):
-                    res = r.json()
-                    if "data" in res:
-                        st.success("Inserted Successfully!")
-                        card = res["data"]
-
-                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
-
-                        st.download_button(
-                            "📥 Download as Excel",
-                            to_excel_bytes(df),
-                            "business_card_manual.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+            else:
+                if r is not None:
+                    try:
+                        err = r.json()
+                    except:
+                        err = r.text
+                    st.error(f"Failed to create card: {err}")
                 else:
-                    if r is not None:
-                        try:
-                            err = r.json()
-                        except:
-                            err = r.text
-                        st.error(f"Failed to create card: {err}")
-                    else:
-                        st.error("Failed to create card (no response).")
-
+                    st.error("Failed to create card (no response).")
 
 # ========================================================================
 # TAB 2 — View & Edit All Cards
 # ========================================================================
 with tab2:
-
     st.info("Fetching all business cards...")
 
     try:
@@ -180,11 +166,9 @@ with tab2:
         data = {}
 
     if "data" in data and data["data"]:
-
         df_all = pd.DataFrame(data["data"])
-        ids = df_all["_id"].astype(str).tolist()
-        df_all["_id"] = df_all["_id"].astype(str)
 
+        # Convert list columns to CSV strings
         def to_csv(v):
             if isinstance(v, list):
                 return ", ".join(v)
@@ -194,37 +178,38 @@ with tab2:
             if col in df_all.columns:
                 df_all[col] = df_all[col].apply(to_csv)
 
-        visible_df = df_all.drop(columns=["_id"])
+        # KEEP `_id` to avoid duplicates + track correct row
+        visible_df = df_all.copy()
 
         # Download button
         st.download_button(
             "📥 Download All as Excel",
-            to_excel_bytes(visible_df),
+            to_excel_bytes(visible_df.drop(columns=["_id"])),
             "all_business_cards.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.markdown("### 📝 Edit Cards Inline")
-        st.write("Make changes → then click **Save Changes** above.")
+        st.markdown("### 📝 Inline Edit Cards")
+        st.write("Edit any column → press **Save Changes** above.")
 
-        # Save button AT THE TOP
         save_clicked = st.button("💾 Save Changes")
 
-        # Editable table
+        # Editable table (ID disabled)
         try:
             edited = st.experimental_data_editor(
                 visible_df,
                 use_container_width=True,
-                num_rows="dynamic"
+                num_rows="dynamic",
+                disabled=["_id"]   # ❗ prevents accidental duplication
             )
         except Exception:
             edited = st.data_editor(
                 visible_df,
                 use_container_width=True,
-                num_rows="dynamic"
+                num_rows="dynamic",
+                disabled=["_id"]
             )
 
-        # Handle saving after edits
         if save_clicked:
             updates = 0
 
@@ -233,7 +218,11 @@ with tab2:
                 new = edited.iloc[i]
 
                 change_set = {}
+
                 for col in visible_df.columns:
+                    if col == "_id":
+                        continue
+
                     o = "" if pd.isna(orig[col]) else orig[col]
                     n = "" if pd.isna(new[col]) else new[col]
 
@@ -245,7 +234,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = ids[i]
+                    card_id = new["_id"]   # ❗ always track correct MongoDB row
                     try:
                         r = requests.patch(
                             f"{BACKEND}/update_card/{card_id}",
