@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-usi7.onrender.com")
+BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -412,3 +412,4 @@ def _clean_payload_for_backend(payload: dict) -> dict:
 #
 # - For very large data sets, consider paging the results server-side.
 #
+
