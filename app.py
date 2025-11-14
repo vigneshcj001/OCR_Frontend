@@ -14,7 +14,6 @@ st.set_page_config(
 )
 
 # Use environment variable for backend (works on Render, Heroku, local dev)
-# Set BACKEND_URL in your service's environment variables to your backend URL.
 BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-usi7.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
@@ -65,7 +64,6 @@ with tab1:
                         st.success("Inserted Successfully!")
 
                         card = res["data"]
-                        # Create DataFrame and hide _id if present
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
 
                         st.dataframe(df, use_container_width=True)
@@ -94,7 +92,7 @@ with tab1:
         else:
             st.info("Upload a card to preview here.")
 
-    # Manual form below
+    # Manual form
     st.markdown("---")
     st.markdown("### Or fill details manually")
 
@@ -104,7 +102,7 @@ with tab1:
         company = st.text_input("Company")
         phones = st.text_input("Phone numbers (comma separated)")
         email = st.text_input("Email")
-        website = st.text_input("Website (include http:// or https:// if possible)")
+        website = st.text_input("Website")
         address = st.text_area("Address")
         social_links = st.text_input("Social links (comma separated)")
         additional_notes = st.text_area("Notes / extra info")
@@ -134,7 +132,7 @@ with tab1:
                 if "data" in res:
                     st.success("Inserted Successfully!")
                     card = res["data"]
-                    # Hide _id before showing or downloading
+
                     df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                     st.dataframe(df, use_container_width=True)
 
@@ -170,11 +168,9 @@ with tab2:
     if "data" in data and data["data"]:
         df_all = pd.DataFrame(data["data"])
 
-        # keep mapping of ids
         ids = df_all["_id"].astype(str).tolist()
         df_all["_id"] = df_all["_id"].astype(str)
 
-        # Convert list fields into editable CSV strings
         def to_csv(v):
             if isinstance(v, list):
                 return ", ".join(v)
@@ -186,7 +182,7 @@ with tab2:
 
         visible_df = df_all.drop(columns=["_id"])
 
-        # Download button (top)
+        # Download button
         st.download_button(
             "📥 Download All as Excel",
             to_excel_bytes(visible_df),
@@ -195,8 +191,14 @@ with tab2:
         )
 
         st.markdown("### 📝 Edit Cards Inline")
-        st.write("Make changes → then click **Save Changes** below.")
+        st.write("Make changes → then click **Save Changes** above.")
 
+        # -----------------------------------------------
+        # 🔼 Save Changes button moved to TOP (HERE)
+        # -----------------------------------------------
+        save_clicked = st.button("💾 Save Changes")
+
+        # Editable table
         try:
             edited = st.experimental_data_editor(
                 visible_df,
@@ -210,7 +212,8 @@ with tab2:
                 num_rows="dynamic"
             )
 
-        if st.button("💾 Save Changes"):
+        # Handle saving after edits
+        if save_clicked:
             updates = 0
             for i in range(len(edited)):
                 orig = visible_df.iloc[i]
@@ -220,6 +223,7 @@ with tab2:
                 for col in visible_df.columns:
                     o = "" if pd.isna(orig[col]) else orig[col]
                     n = "" if pd.isna(new[col]) else new[col]
+
                     if str(o) != str(n):
                         if col in ["phone_numbers", "social_links"]:
                             items = [x.strip() for x in n.split(",") if x.strip()]
@@ -230,7 +234,11 @@ with tab2:
                 if change_set:
                     card_id = ids[i]
                     try:
-                        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set, timeout=30)
+                        r = requests.patch(
+                            f"{BACKEND}/update_card/{card_id}",
+                            json=change_set,
+                            timeout=30
+                        )
                         if r.status_code in (200, 201):
                             updates += 1
                     except Exception as e:
@@ -244,5 +252,6 @@ with tab2:
                     pass
             else:
                 st.info("No changes detected.")
+
     else:
         st.warning("No cards found.")
