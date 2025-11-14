@@ -168,9 +168,7 @@ with tab2:
     if "data" in data and data["data"]:
         df_all = pd.DataFrame(data["data"])
 
-        ids = df_all["_id"].astype(str).tolist()
-        df_all["_id"] = df_all["_id"].astype(str)
-
+        # Convert list columns to CSV strings
         def to_csv(v):
             if isinstance(v, list):
                 return ", ".join(v)
@@ -180,47 +178,51 @@ with tab2:
             if col in df_all.columns:
                 df_all[col] = df_all[col].apply(to_csv)
 
-        visible_df = df_all.drop(columns=["_id"])
+        # KEEP `_id` to avoid duplicates + track correct row
+        visible_df = df_all.copy()
 
         # Download button
         st.download_button(
             "📥 Download All as Excel",
-            to_excel_bytes(visible_df),
+            to_excel_bytes(visible_df.drop(columns=["_id"])),
             "all_business_cards.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-        st.markdown("### 📝 Edit Cards Inline")
-        st.write("Make changes → then click **Save Changes** above.")
+        st.markdown("### 📝 Inline Edit Cards")
+        st.write("Edit any column → press **Save Changes** above.")
 
-        # -----------------------------------------------
-        # 🔼 Save Changes button moved to TOP (HERE)
-        # -----------------------------------------------
         save_clicked = st.button("💾 Save Changes")
 
-        # Editable table
+        # Editable table (ID disabled)
         try:
             edited = st.experimental_data_editor(
                 visible_df,
                 use_container_width=True,
-                num_rows="dynamic"
+                num_rows="dynamic",
+                disabled=["_id"]   # ❗ prevents accidental duplication
             )
         except Exception:
             edited = st.data_editor(
                 visible_df,
                 use_container_width=True,
-                num_rows="dynamic"
+                num_rows="dynamic",
+                disabled=["_id"]
             )
 
-        # Handle saving after edits
         if save_clicked:
             updates = 0
+
             for i in range(len(edited)):
                 orig = visible_df.iloc[i]
                 new = edited.iloc[i]
+
                 change_set = {}
 
                 for col in visible_df.columns:
+                    if col == "_id":
+                        continue
+
                     o = "" if pd.isna(orig[col]) else orig[col]
                     n = "" if pd.isna(new[col]) else new[col]
 
@@ -232,7 +234,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = ids[i]
+                    card_id = new["_id"]   # ❗ always track correct MongoDB row
                     try:
                         r = requests.patch(
                             f"{BACKEND}/update_card/{card_id}",
