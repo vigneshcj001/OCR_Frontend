@@ -1,4 +1,3 @@
-# frontend/app.py
 import os
 import io
 import time
@@ -91,6 +90,7 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        # drop _id for preview/download
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -225,16 +225,17 @@ with tab2:
             if c not in df_all.columns:
                 df_all[c] = ""
 
+        # Keep a separate list of ids (do NOT show these to the user)
+        _ids = df_all["_id"].astype(str).tolist()
+
         # Convert list columns to CSV strings for display/editing
+        display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
-            df_all[col] = df_all[col].apply(list_to_csv_str)
+            display_df[col] = display_df[col].apply(list_to_csv_str)
 
-        # Keep `_id` for updates, but disable editing it
-        visible_df = df_all.copy()
-
-        # Migrate timestamps to readable format if necessary (already strings from backend)
-        # visible_df["created_at"] = visible_df["created_at"].fillna("")
-        # visible_df["edited_at"] = visible_df["edited_at"].fillna("")
+        # Drop the _id column from the displayed dataframe so users don't see it
+        if "_id" in display_df.columns:
+            display_df = display_df.drop(columns=["_id"])
 
         # Place Save Changes button above the editor
         save_col_left, save_col_mid, save_col_right = st.columns([1, 3, 1])
@@ -248,22 +249,20 @@ with tab2:
         # Use experimental_data_editor if available; fallback to data_editor
         try:
             edited = st.experimental_data_editor(
-                visible_df,
+                display_df,
                 use_container_width=True,
                 num_rows="fixed",    # prevents adding new rows (no duplicates)
-                disabled=["_id"],    # ensure _id can't be changed
             )
         except Exception:
             edited = st.data_editor(
-                visible_df,
+                display_df,
                 use_container_width=True,
                 num_rows="fixed",
-                disabled=["_id"],
             )
 
         # Helper: open an edit modal for a selected row (manual drawer)
         def open_edit_modal(row):
-            # Use Streamlit modal (available in recent versions)
+            # row MUST contain the original _id field (so pass df_all row to this fn)
             with st.modal(f"Edit card — {_truncate_name(row.get('name', ''))}", clear_on_submit=False):
                 c1, c2 = st.columns(2)
                 name_m = c1.text_input("Full name", value=row.get("name", ""))
@@ -316,7 +315,8 @@ with tab2:
         chosen_row_index = st.number_input("Open row index (0-based)", min_value=0, max_value=len(edited) - 1, value=0, step=1)
 
         if st.button("Open selected row in drawer"):
-            row = edited.iloc[chosen_row_index].to_dict()
+            # Map the chosen index back to the original df_all row so we have _id
+            row = df_all.iloc[chosen_row_index].to_dict()
             open_edit_modal(row)
 
         # When Save Changes clicked, iterate rows and diff against original and send PATCHs
@@ -324,14 +324,11 @@ with tab2:
             updates = 0
             problems = 0
             for i in range(len(edited)):
-                orig = visible_df.iloc[i]
+                orig = display_df.iloc[i]
                 new = edited.iloc[i]
 
                 change_set = {}
-                for col in visible_df.columns:
-                    if col == "_id":
-                        continue
-
+                for col in display_df.columns:
                     o = "" if pd.isna(orig[col]) else orig[col]
                     n = "" if pd.isna(new[col]) else new[col]
 
@@ -343,7 +340,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = new["_id"]   # always track correct MongoDB row
+                    card_id = _ids[i]   # always track correct MongoDB row
                     try:
                         r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=change_set, timeout=30)
                         if r.status_code in (200, 201):
@@ -392,24 +389,3 @@ def _clean_payload_for_backend(payload: dict) -> dict:
         else:
             out[k] = v
     return out
-
-# ----------------------------
-# Notes:
-# - This frontend expects the following backend endpoints:
-#   POST /upload_card (file upload)
-#   POST /create_card (json payload)
-#   GET  /all_cards
-#   PATCH /update_card/{card_id}
-#   DELETE /delete_card/{card_id}  <-- optional, used by modal delete button
-#
-# If your backend doesn't have DELETE /delete_card/{id}, you can either
-# - add it to the backend, or
-# - remove the delete button logic (the modal will still allow editing).
-#
-# - The editor is configured with num_rows="fixed" and disabled ["_id"]
-#   to prevent new rows from being created and to ensure edits map to the
-#   original MongoDB documents (no duplicates).
-#
-# - For very large data sets, consider paging the results server-side.
-#
-
