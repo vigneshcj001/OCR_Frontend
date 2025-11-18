@@ -163,7 +163,7 @@ with tab1:
                         # hide backend-only fields if present
                         card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
+                        st.dataframe(df, width="stretch")
                         st.download_button(
                             "📥 Download as Excel",
                             to_excel_bytes(df),
@@ -478,3 +478,4 @@ with tab2:
                     st.info("No changes detected.")
                 else:
                     st.warning(f"Save completed with {problems} failures.")
+
