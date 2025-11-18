@@ -25,7 +25,7 @@ if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
+BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com/")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR (OpenAI vision) → Store → Edit → Download")
@@ -451,3 +451,4 @@ with tab2:
                     st.info("No changes detected.")
                 else:
                     st.warning(f"Save completed with {problems} failures.")
+
