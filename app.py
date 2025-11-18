@@ -1,8 +1,4 @@
-# app.py
-# Streamlit frontend for Business Card OCR → MongoDB
-# Assumes backend exposes endpoints: /upload_card, /create_card, /all_cards, /update_card, /update_notes, /delete_card
-# Usage: set BACKEND_URL env var or default will be used.
-
+# app.py (Streamlit frontend to consume the backend)
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -21,47 +17,47 @@ st.set_page_config(
     layout="wide",
 )
 
+# Ensure a refresh counter exists in session_state (mutating this triggers a rerun)
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com/")
+BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com")
 
 st.title("📇 Business Card OCR → MongoDB")
-st.write("Upload → Extract OCR (OpenAI vision) → Store → Edit → Download")
+st.write("Upload → Extract OCR → Store → Edit → Download")
 
 # ----------------------------
 # Helpers
 # ----------------------------
-
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
-
 def list_to_csv_str(v):
     if isinstance(v, list):
         return ", ".join([str(x) for x in v])
     return v if v is not None else ""
-
 
 def csv_str_to_list(s: str):
     if s is None:
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
-
 def _truncate_name(s: str, length: int = 30) -> str:
     if not s:
         return ""
     return s if len(s) <= length else s[: length - 3] + "..."
 
-
 def _clean_payload_for_backend(payload: dict) -> dict:
+    """
+    Convert csv strings to lists when appropriate and drop empty/none fields.
+    """
     out = {}
     for k, v in payload.items():
+        # drop None or empty string entirely
         if v is None:
             continue
         if isinstance(v, str) and v.strip() == "":
@@ -75,7 +71,6 @@ def _clean_payload_for_backend(payload: dict) -> dict:
             out[k] = v
     return out
 
-
 def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     try:
         resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
@@ -86,9 +81,12 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
         st.error(f"Failed to fetch cards: {e}")
         return []
 
-
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
+    """
+    Unified helper to PATCH a single card. Returns (success, message).
+    """
     try:
+        # ensure id is string
         card_id = str(card_id)
         r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
         if r.status_code in (200, 201):
@@ -101,7 +99,6 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
             return False, f"Failed: {err}"
     except Exception as e:
         return False, str(e)
-
 
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
@@ -129,10 +126,11 @@ tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 with tab1:
     col_preview, col_upload = st.columns([3, 7])
 
+    # Upload column (larger)
     with col_upload:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
-            "Drag and drop file here\nLimit 20MB • JPG, JPEG, PNG",
+            "Drag and drop file here\nLimit 200MB • JPG, JPEG, PNG",
             type=["jpg", "jpeg", "png"]
         )
 
@@ -162,6 +160,7 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
+                        # hide backend-only fields if present
                         card.pop("field_validations", None)
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
@@ -184,6 +183,7 @@ with tab1:
                         st.error("Upload failed (no response).")
             progress.progress(100)
 
+    # Preview column (narrow)
     with col_preview:
         st.markdown("### Preview")
         if uploaded_file:
@@ -193,6 +193,7 @@ with tab1:
 
     st.markdown("---")
 
+    # Manual form (collapsible)
     with st.expander("📋 Or fill details manually"):
         with st.form("manual_card_form"):
             c1, c2 = st.columns(2)
@@ -266,15 +267,19 @@ with tab1:
 # ========================================================================
 with tab2:
     st.markdown("### All business cards")
+    # Top control row
     top_col1, top_col2 = st.columns([3, 1])
     with top_col1:
         st.info("Edit any column → press **Save Changes** to apply edits to the backend.")
     with top_col2:
+        # Fetch data to calculate download content
         data = fetch_all_cards()
         if data:
+            # Remove backend-only field_validations from download data
             for d in data:
                 d.pop("field_validations", None)
             df_all_for_download = pd.DataFrame(data)
+            # convert lists to CSV strings for Excel
             for col in ["phone_numbers", "social_links"]:
                 if col in df_all_for_download.columns:
                     df_all_for_download[col] = df_all_for_download[col].apply(list_to_csv_str)
@@ -285,46 +290,55 @@ with tab2:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.write("")
+            st.write("")  # placeholder for alignment
 
+    # Fetch fresh data
     with st.spinner("Fetching all business cards..."):
         data = fetch_all_cards()
 
     if not data:
         st.warning("No cards found.")
     else:
+        # Normalize into DataFrame for editing/display
+        # Remove field_validations from each record to avoid showing it
         for d in data:
             d.pop("field_validations", None)
 
         df_all = pd.DataFrame(data)
 
+        # Ensure all expected columns exist (prevents editor crashing)
         expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
 
+        # Keep a separate list of ids (do NOT show these to the user)
         _ids = df_all["_id"].astype(str).tolist()
 
+        # Convert list columns to CSV strings for display/editing
         display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
             display_df[col] = display_df[col].apply(list_to_csv_str)
 
+        # Drop the _id column from the displayed dataframe so users don't see it
         if "_id" in display_df.columns:
             display_df = display_df.drop(columns=["_id"])
 
+        # Place Save Changes button above the editor
         save_col_left, save_col_mid, save_col_right = st.columns([1, 3, 1])
         with save_col_left:
             save_clicked = st.button("💾 Save Changes")
         with save_col_mid:
-            st.write("")
+            st.write("")  # spacer
         with save_col_right:
-            st.write("")
+            st.write("")  # spacer
 
+        # Use experimental_data_editor if available; fallback to data_editor
         try:
             edited = st.experimental_data_editor(
                 display_df,
                 use_container_width=True,
-                num_rows="fixed",
+                num_rows="fixed",    # prevents adding new rows (no duplicates)
             )
         except Exception:
             edited = st.data_editor(
@@ -333,11 +347,16 @@ with tab2:
                 num_rows="fixed",
             )
 
+        # -----------------------
+        # Persisted drawer implementation using session_state
+        # -----------------------
+        # Ensure session state defaults
         if "drawer_open" not in st.session_state:
             st.session_state["drawer_open"] = False
         if "drawer_row" not in st.session_state:
             st.session_state["drawer_row"] = None
 
+        # Build friendly options list for selectbox
         options = []
         for idx, r in df_all.reset_index(drop=True).iterrows():
             display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
@@ -345,19 +364,24 @@ with tab2:
 
         selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
+        # When user clicks to open, persist the chosen row index in session_state
         if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
             st.session_state["drawer_row"] = sel_idx
 
+        # If drawer_open, render the expander every run (so its buttons can be clicked)
         if st.session_state.get("drawer_open") and st.session_state.get("drawer_row") is not None:
             sel_idx = st.session_state["drawer_row"]
+            # guard in case data changed length
             if sel_idx < 0 or sel_idx >= len(df_all):
                 st.warning("Selected row is no longer available.")
                 st.session_state["drawer_open"] = False
                 st.session_state["drawer_row"] = None
             else:
                 row = df_all.iloc[sel_idx].to_dict()
+
+                # Use a string id for keys and backend calls
                 id_str = str(row.get("_id"))
 
                 title = f"Edit card — {_truncate_name(row.get('name', ''))}"
@@ -392,6 +416,7 @@ with tab2:
                             success, msg = patch_card(id_str, payload)
                             if success:
                                 st.success("Updated")
+                                # close drawer and trigger rerun via session_state mutation
                                 st.session_state["drawer_open"] = False
                                 st.session_state["drawer_row"] = None
                                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
@@ -415,6 +440,7 @@ with tab2:
                             st.session_state["drawer_row"] = None
                             st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
 
+        # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
             updates = 0
             problems = 0
@@ -435,7 +461,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = _ids[i]
+                    card_id = _ids[i]   # always track correct MongoDB row
                     success, msg = patch_card(card_id, change_set)
                     if success:
                         updates += 1
@@ -445,10 +471,10 @@ with tab2:
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
+                # trigger rerun via session_state mutation
                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
             else:
                 if problems == 0:
                     st.info("No changes detected.")
                 else:
                     st.warning(f"Save completed with {problems} failures.")
-
