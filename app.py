@@ -139,9 +139,11 @@ with tab1:
             time.sleep(0.08)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+                # include content-type for better backend handling
+                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "image/jpeg")}
                 try:
-                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
+                    # NOTE: changed endpoint from /upload_card -> /extract
+                    response = requests.post(f"{BACKEND}/extract", files=files, timeout=120)
                     try:
                         response.raise_for_status()
                     except requests.exceptions.HTTPError:
