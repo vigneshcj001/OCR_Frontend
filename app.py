@@ -1,4 +1,4 @@
-# app.py — Streamlit frontend for Business Card OCR → MongoDB (improved debug + UX)
+# File: app.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -7,7 +7,6 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO
-import json
 
 # ----------------------------
 # Page Configuration
@@ -23,11 +22,10 @@ if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com/")
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
-st.caption("This frontend talks to the FastAPI backend and shows debug info returned by the OCR pipeline.")
 
 # ----------------------------
 # Helpers
@@ -117,17 +115,6 @@ def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-def create_card_manual(payload: dict, timeout: int = 30) -> Tuple[bool, dict]:
-    try:
-        r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=timeout)
-        r.raise_for_status()
-        return True, r.json()
-    except Exception as e:
-        try:
-            return False, {"error": getattr(e, "response", str(e))}
-        except Exception:
-            return False, {"error": str(e)}
-
 # ----------------------------
 # Layout: Tabs
 # ----------------------------
@@ -173,10 +160,9 @@ with tab1:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
-                        # hide backend-only fields if present in displayed table, but show debug panel below
-                        display_card = dict(card)
-                        display_card.pop("field_validations", None)
-                        df = pd.DataFrame([display_card]).drop(columns=["_id"], errors="ignore")
+                        # hide backend-only fields if present
+                        card.pop("field_validations", None)
+                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
                             "📥 Download as Excel",
@@ -184,33 +170,6 @@ with tab1:
                             "business_card.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-
-                        # Debug details (expander)
-                        with st.expander("🧾 OCR & validation details (debug)", expanded=False):
-                            ocr_conf = card.get("_ocr_avg_confidence")
-                            if ocr_conf is not None:
-                                st.write(f"**OCR average confidence:** {ocr_conf:.1f}")
-                                if ocr_conf < 75:
-                                    st.warning("Low OCR confidence — consider re-taking the photo or enabling OpenAI refinement on the backend.")
-                            else:
-                                st.write("**OCR average confidence:** N/A")
-
-                            if card.get("_raw_ocr_text"):
-                                st.markdown("**Raw OCR text**")
-                                st.code(card.get("_raw_ocr_text")[:1500] + ("" if len(card.get("_raw_ocr_text")) <= 1500 else "\n\n... (truncated)"))
-
-                            if card.get("_ocr_low_conf_words"):
-                                st.markdown("**Low confidence words**")
-                                st.table(pd.DataFrame(card.get("_ocr_low_conf_words")))
-
-                            fv = card.get("field_validations")
-                            if fv:
-                                st.markdown("**Field validations (summary)**")
-                                st.json(fv)
-
-                            st.markdown("---")
-                            st.markdown("If any field is wrong, go to 'View All Cards' and open the edit drawer for this contact to fix it.")
-
                     else:
                         st.warning("Backend returned success but no data payload.")
                 else:
@@ -311,7 +270,7 @@ with tab2:
     # Top control row
     top_col1, top_col2 = st.columns([3, 1])
     with top_col1:
-        st.info("Edit any column → press **Save Changes** to apply edits to the backend. Use the drawer to view OCR debug info for a specific card.")
+        st.info("Edit any column → press **Save Changes** to apply edits to the backend.")
     with top_col2:
         # Fetch data to calculate download content
         data = fetch_all_cards()
@@ -425,12 +384,6 @@ with tab2:
                 # Use a string id for keys and backend calls
                 id_str = str(row.get("_id"))
 
-                # Fetch the full record (including debug fields) so the drawer can show them
-                try:
-                    full = next((d for d in data if str(d.get("_id")) == id_str), None)
-                except Exception:
-                    full = None
-
                 title = f"Edit card — {_truncate_name(row.get('name', ''))}"
                 with st.expander(title, expanded=True):
                     c1, c2 = st.columns(2)
@@ -444,25 +397,6 @@ with tab2:
                     social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{id_str}")
                     more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{id_str}")
                     notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{id_str}")
-
-                    # Show OCR debug panel if available
-                    if full:
-                        st.markdown("**OCR & validation details**")
-                        ocr_conf = full.get("_ocr_avg_confidence")
-                        if ocr_conf is not None:
-                            st.write(f"OCR average confidence: **{ocr_conf:.1f}**")
-                            if ocr_conf < 75:
-                                st.warning("Low OCR confidence")
-                        if full.get("_raw_ocr_text"):
-                            st.markdown("Raw OCR text (truncated)")
-                            st.code(full.get("_raw_ocr_text")[:2000] + ("" if len(full.get("_raw_ocr_text")) <= 2000 else "\n\n... (truncated)"))
-                        if full.get("_ocr_low_conf_words"):
-                            st.markdown("Low confidence words")
-                            st.table(pd.DataFrame(full.get("_ocr_low_conf_words")))
-                        fv = full.get("field_validations")
-                        if fv:
-                            st.markdown("Field validations")
-                            st.json(fv)
 
                     col_ok, col_del, col_close = st.columns([1,1,1])
                     with col_ok:
@@ -544,4 +478,3 @@ with tab2:
                     st.info("No changes detected.")
                 else:
                     st.warning(f"Save completed with {problems} failures.")
-
