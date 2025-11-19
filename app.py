@@ -1,4 +1,4 @@
-# app.py
+# File: app.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -21,9 +21,8 @@ st.set_page_config(
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
-# Backend URL (env var or default)
-# Default to localhost for local development; change via BACKEND_URL env var.
-BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
+# Backend URL (env var or default to localhost)
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -136,51 +135,80 @@ with tab1:
 
         if uploaded_file:
             progress = st.progress(10)
-            time.sleep(0.08)
+            time.sleep(0.06)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
-                # include content-type for better backend handling
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "image/jpeg")}
-                response = None
+                # prepare multipart - include mime/type if available
+                fname = uploaded_file.name
+                b = uploaded_file.getvalue()
+                mime = getattr(uploaded_file, "type", "image/jpeg")
+                files = {"file": (fname, b, mime)}
                 try:
-                    # Use /upload_card endpoint (Tesseract + OpenAI chat-based parser flow saved to MongoDB)
                     response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
-                    response.raise_for_status()
-                    res = response.json()
-                except requests.exceptions.HTTPError:
-                    # provide backend error message
-                    try:
-                        res = response.json() if response is not None else {}
-                    except Exception:
-                        res = {"error": response.text if response is not None else "No response body"}
-                    st.error(f"Upload failed: {res}")
-                    res = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
-                    res = None
+                    response = None
 
-                if res:
-                    # Expecting {"message": "...", "data": {...}}
-                    if "data" in res:
-                        st.success("Inserted Successfully!")
-                        card = res["data"]
-                        # hide backend-only fields if present
-                        card.pop("field_validations", None)
-                        # If _id is present, keep it but don't show as column in preview table
-                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
-                        st.download_button(
-                            "📥 Download as Excel",
-                            to_excel_bytes(df),
-                            "business_card.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                if response:
+                    # Try to parse JSON error/success
+                    try:
+                        response_json = response.json()
+                    except Exception:
+                        response_json = None
+
+                    if response.status_code in (200, 201):
+                        # success
+                        if response_json and "data" in response_json:
+                            st.success("Inserted Successfully!")
+                            card = response_json["data"]
+                            # remove backend-only or heavy fields
+                            card.pop("field_validations", None)
+                            # ensure _id is printable (handle {'$oid': '...'} or ObjectId)
+                            if isinstance(card.get("_id"), dict):
+                                # try common Mongo json_util forms
+                                oid = None
+                                if "$oid" in card["_id"]:
+                                    oid = card["_id"]["$oid"]
+                                elif "oid" in card["_id"]:
+                                    oid = card["_id"]["oid"]
+                                card["_id"] = oid or str(card["_id"])
+                            df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                            st.dataframe(df, use_container_width=True)
+                            st.download_button(
+                                "📥 Download as Excel",
+                                to_excel_bytes(df),
+                                "business_card.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            # some backends may return the document directly
+                            try:
+                                card = response_json or {}
+                                if card:
+                                    st.success("Inserted Successfully!")
+                                    card.pop("field_validations", None)
+                                    if "_id" in card and isinstance(card["_id"], dict):
+                                        card["_id"] = card["_id"].get("$oid", str(card["_id"]))
+                                    df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                                    st.dataframe(df, use_container_width=True)
+                                    st.download_button(
+                                        "📥 Download as Excel",
+                                        to_excel_bytes(df),
+                                        "business_card.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                    )
+                                else:
+                                    st.warning("Upload succeeded but server returned no usable data.")
+                            except Exception:
+                                st.warning("Upload succeeded but server returned unexpected payload.")
                     else:
-                        # maybe the backend returned structured parsed fields without storing
-                        st.info("Backend returned a response (no stored data). Showing raw JSON.")
-                        st.json(res)
-                # else errors already displayed
-
+                        # error path: show JSON if available
+                        if response_json:
+                            st.error(f"Upload failed: {response_json}")
+                        else:
+                            st.error(f"Upload failed: HTTP {response.status_code} - {response.text[:300]}")
+                else:
+                    st.error("Upload failed (no response).")
             progress.progress(100)
 
     # Preview column (narrow)
@@ -225,34 +253,40 @@ with tab1:
             with st.spinner("Saving..."):
                 try:
                     r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
-                    r.raise_for_status()
-                    res = r.json()
-                except requests.exceptions.HTTPError:
-                    try:
-                        err = r.json()
-                    except Exception:
-                        err = r.text
-                    st.error(f"Failed to create card: {err}")
-                    res = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
-                    res = None
+                    r = None
 
-                if res:
-                    if "data" in res:
-                        st.success("Inserted Successfully!")
-                        card = res["data"]
-                        card.pop("field_validations", None)
-                        df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
-                        st.download_button(
-                            "📥 Download as Excel",
-                            to_excel_bytes(df),
-                            "business_card_manual.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                if r:
+                    try:
+                        res_json = r.json()
+                    except Exception:
+                        res_json = None
+
+                    if r.status_code in (200, 201):
+                        if res_json and "data" in res_json:
+                            st.success("Inserted Successfully!")
+                            card = res_json["data"]
+                            card.pop("field_validations", None)
+                            if isinstance(card.get("_id"), dict):
+                                card["_id"] = card["_id"].get("$oid", str(card["_id"]))
+                            df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
+                            st.dataframe(df, use_container_width=True)
+                            st.download_button(
+                                "📥 Download as Excel",
+                                to_excel_bytes(df),
+                                "business_card_manual.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        else:
+                            st.success("Created (no full data returned).")
                     else:
-                        st.warning("Created but no data returned.")
+                        if res_json:
+                            st.error(f"Failed to create card: {res_json}")
+                        else:
+                            st.error(f"Failed to create card: HTTP {r.status_code} - {r.text[:300]}")
+                else:
+                    st.error("Failed to create card (no response).")
 
 # ========================================================================
 # TAB 2 — View & Edit All Cards
