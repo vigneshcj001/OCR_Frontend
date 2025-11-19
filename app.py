@@ -1,4 +1,4 @@
-# app.py (Streamlit frontend to consume the backend)
+# app.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -22,7 +22,8 @@ if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
 # Backend URL (env var or default)
-BACKEND = os.environ.get("BACKEND_URL", "https://ocr-backend-rjb1.onrender.com")
+# Default to localhost for local development; change via BACKEND_URL env var.
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR → Store → Edit → Download")
@@ -86,7 +87,6 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
     Unified helper to PATCH a single card. Returns (success, message).
     """
     try:
-        # ensure id is string
         card_id = str(card_id)
         r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
         if r.status_code in (200, 201):
@@ -141,29 +141,32 @@ with tab1:
             with st.spinner("Processing image with OCR and uploading..."):
                 # include content-type for better backend handling
                 files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "image/jpeg")}
+                response = None
                 try:
-                    # NOTE: changed endpoint from /upload_card -> /extract
-                    response = requests.post(f"{BACKEND}/extract", files=files, timeout=120)
+                    # Use /upload_card endpoint (Tesseract + OpenAI chat-based parser flow saved to MongoDB)
+                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
+                    response.raise_for_status()
+                    res = response.json()
+                except requests.exceptions.HTTPError:
+                    # provide backend error message
                     try:
-                        response.raise_for_status()
-                    except requests.exceptions.HTTPError:
-                        try:
-                            err = response.json()
-                        except Exception:
-                            err = response.text
-                        st.error(f"Upload failed: {err}")
-                        response = None
+                        res = response.json() if response is not None else {}
+                    except Exception:
+                        res = {"error": response.text if response is not None else "No response body"}
+                    st.error(f"Upload failed: {res}")
+                    res = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
-                    response = None
+                    res = None
 
-                if response and response.status_code in (200, 201):
-                    res = response.json()
+                if res:
+                    # Expecting {"message": "...", "data": {...}}
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
                         # hide backend-only fields if present
                         card.pop("field_validations", None)
+                        # If _id is present, keep it but don't show as column in preview table
                         df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
                         st.dataframe(df, use_container_width=True)
                         st.download_button(
@@ -173,16 +176,11 @@ with tab1:
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                     else:
-                        st.warning("Backend returned success but no data payload.")
-                else:
-                    if response is not None:
-                        try:
-                            err = response.json()
-                        except Exception:
-                            err = response.text
-                        st.error(f"Upload failed: {err}")
-                    else:
-                        st.error("Upload failed (no response).")
+                        # maybe the backend returned structured parsed fields without storing
+                        st.info("Backend returned a response (no stored data). Showing raw JSON.")
+                        st.json(res)
+                # else errors already displayed
+
             progress.progress(100)
 
     # Preview column (narrow)
@@ -227,19 +225,20 @@ with tab1:
             with st.spinner("Saving..."):
                 try:
                     r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
-                    if r.status_code >= 400:
-                        try:
-                            err = r.json()
-                        except Exception:
-                            err = r.text
-                        st.error(f"Failed to create card: {err}")
-                        r = None
+                    r.raise_for_status()
+                    res = r.json()
+                except requests.exceptions.HTTPError:
+                    try:
+                        err = r.json()
+                    except Exception:
+                        err = r.text
+                    st.error(f"Failed to create card: {err}")
+                    res = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
-                    r = None
+                    res = None
 
-                if r and r.status_code in (200, 201):
-                    res = r.json()
+                if res:
                     if "data" in res:
                         st.success("Inserted Successfully!")
                         card = res["data"]
@@ -254,15 +253,6 @@ with tab1:
                         )
                     else:
                         st.warning("Created but no data returned.")
-                else:
-                    if r is not None:
-                        try:
-                            err = r.json()
-                        except Exception:
-                            err = r.text
-                        st.error(f"Failed to create card: {err}")
-                    else:
-                        st.error("Failed to create card (no response).")
 
 # ========================================================================
 # TAB 2 — View & Edit All Cards
