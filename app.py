@@ -193,12 +193,11 @@ with tab1:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
 
-                # Defensive display: sanitize backend JSON before rendering
                 if response is not None:
                     st.write(f"Backend status: {response.status_code}")
                     try:
+                        # Sanitize backend's JSON for display (defensive)
                         resp_json = response.json()
-                        # If wrapper exists, sanitize inner 'data'
                         if isinstance(resp_json, dict) and "data" in resp_json and isinstance(resp_json["data"], dict):
                             inner = dict(resp_json["data"])
                             for remove_key in ("confidence_notes", "extra", "raw_text"):
@@ -223,7 +222,7 @@ with tab1:
                     if card:
                         st.success("Extracted — review and save below")
                         card_display = dict(card)
-                        # Remove any internal/debug fields, just in case
+                        # Defensive sanitization - ensure we don't show internal/debug fields
                         for remove_key in ("confidence_notes", "extra", "raw_text"):
                             card_display.pop(remove_key, None)
 
@@ -442,14 +441,9 @@ with tab2:
             display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
             options.append(f"{idx} — {display_name}")
 
-        # default to first index if available
-        selected_index = 0 if options else None
-        if options:
-            selected = st.selectbox("Select a row to edit", options, index=selected_index, help="Pick a contact to open the edit drawer")
-        else:
-            selected = None
+        selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
-        if selected and st.button("Open selected row in drawer"):
+        if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
             st.session_state["drawer_row"] = sel_idx
