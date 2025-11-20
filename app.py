@@ -1,4 +1,4 @@
-# File: app.py
+# streamlit_frontend.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -17,15 +17,18 @@ st.set_page_config(
     layout="wide",
 )
 
-# Ensure a refresh counter exists in session_state (mutating this triggers a rerun)
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
-# Backend URL (env var or default to localhost)
-BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
+FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # expected to be set in env (.env) so UI doesn't prompt
 
 st.title("📇 Business Card OCR → MongoDB")
-st.write("Upload → Extract OCR → Store → Edit → Download")
+st.write("Upload → Extract OCR (OpenAI required) → Store → Edit → Download")
+
+if not FRONTEND_OPENAI_KEY:
+    st.error("FRONTEND_OPENAI_KEY environment variable is not set. Please set it to a valid OpenAI key (sk-...). The frontend will send this key to the backend for parsing.")
+    st.stop()
 
 # ----------------------------
 # Helpers
@@ -52,12 +55,8 @@ def _truncate_name(s: str, length: int = 30) -> str:
     return s if len(s) <= length else s[: length - 3] + "..."
 
 def _clean_payload_for_backend(payload: dict) -> dict:
-    """
-    Convert csv strings to lists when appropriate and drop empty/none fields.
-    """
     out = {}
     for k, v in payload.items():
-        # drop None or empty string entirely
         if v is None:
             continue
         if isinstance(v, str) and v.strip() == "":
@@ -76,18 +75,16 @@ def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
         resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("data", [])
+        return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
 
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
-    """
-    Unified helper to PATCH a single card. Returns (success, message).
-    """
     try:
         card_id = str(card_id)
-        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), timeout=timeout)
+        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), headers=headers, timeout=timeout)
         if r.status_code in (200, 201):
             return True, "Updated"
         else:
@@ -102,7 +99,8 @@ def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, st
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
         card_id = str(card_id)
-        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", timeout=timeout)
+        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", headers=headers, timeout=timeout)
         if r.status_code in (200, 204):
             return True, "Deleted"
         else:
@@ -125,7 +123,6 @@ tab1, tab2 = st.tabs(["📤 Upload Card", "📁 View All Cards"])
 with tab1:
     col_preview, col_upload = st.columns([3, 7])
 
-    # Upload column (larger)
     with col_upload:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
@@ -135,83 +132,92 @@ with tab1:
 
         if uploaded_file:
             progress = st.progress(10)
-            time.sleep(0.06)
+            time.sleep(0.08)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
-                # prepare multipart - include mime/type if available
-                fname = uploaded_file.name
-                b = uploaded_file.getvalue()
-                mime = getattr(uploaded_file, "type", "image/jpeg")
-                files = {"file": (fname, b, mime)}
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
+                }
+                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+
                 try:
-                    response = requests.post(f"{BACKEND}/upload_card", files=files, timeout=120)
+                    response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
 
-                if response:
-                    # Try to parse JSON error/success
+                if response is not None:
+                    st.write(f"Backend status: {response.status_code}")
                     try:
-                        response_json = response.json()
+                        st.json(response.json())
                     except Exception:
-                        response_json = None
+                        st.text(response.text)
 
-                    if response.status_code in (200, 201):
-                        # success
-                        if response_json and "data" in response_json:
-                            st.success("Inserted Successfully!")
-                            card = response_json["data"]
-                            # remove backend-only or heavy fields
-                            card.pop("field_validations", None)
-                            # ensure _id is printable (handle {'$oid': '...'} or ObjectId)
-                            if isinstance(card.get("_id"), dict):
-                                # try common Mongo json_util forms
-                                oid = None
-                                if "$oid" in card["_id"]:
-                                    oid = card["_id"]["$oid"]
-                                elif "oid" in card["_id"]:
-                                    oid = card["_id"]["oid"]
-                                card["_id"] = oid or str(card["_id"])
-                            df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                            st.dataframe(df, use_container_width=True)
-                            st.download_button(
-                                "📥 Download as Excel",
-                                to_excel_bytes(df),
-                                "business_card.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        else:
-                            # some backends may return the document directly
+                if response and response.status_code in (200, 201):
+                    res = response.json()
+                    card = res.get("data") if isinstance(res, dict) and "data" in res else res
+
+                    if card:
+                        st.success("Extracted — review and save below")
+                        card_display = dict(card)
+                        card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
+                        card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
+
+                        df = pd.DataFrame([card_display]).drop(columns=["_id"], errors="ignore")
+                        st.dataframe(df, use_container_width=True)
+
+                        if st.button("📥 Save extracted contact to DB"):
+                            payload = {
+                                "name": card.get("name"),
+                                "designation": card.get("designation"),
+                                "company": card.get("company"),
+                                "phone_numbers": card.get("phone_numbers") or [],
+                                "email": card.get("email"),
+                                "website": card.get("website"),
+                                "address": card.get("address"),
+                                "social_links": card.get("social_links") or [],
+                                "more_details": card.get("more_details") or "",
+                                "additional_notes": card.get("additional_notes") or "",
+                            }
                             try:
-                                card = response_json or {}
-                                if card:
+                                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+                                r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
+                                if r.status_code >= 400:
+                                    try:
+                                        err = r.json()
+                                    except Exception:
+                                        err = r.text
+                                    st.error(f"Failed to create card: {err}")
+                                else:
+                                    res2 = r.json()
+                                    saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
                                     st.success("Inserted Successfully!")
-                                    card.pop("field_validations", None)
-                                    if "_id" in card and isinstance(card["_id"], dict):
-                                        card["_id"] = card["_id"].get("$oid", str(card["_id"]))
-                                    df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                                    st.dataframe(df, use_container_width=True)
+                                    saved_display = dict(saved)
+                                    saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
+                                    saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
+                                    df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
+                                    st.dataframe(df2, use_container_width=True)
                                     st.download_button(
                                         "📥 Download as Excel",
-                                        to_excel_bytes(df),
+                                        to_excel_bytes(df2),
                                         "business_card.xlsx",
                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                     )
-                                else:
-                                    st.warning("Upload succeeded but server returned no usable data.")
-                            except Exception:
-                                st.warning("Upload succeeded but server returned unexpected payload.")
+                            except Exception as e:
+                                st.error(f"Failed to reach backend: {e}")
                     else:
-                        # error path: show JSON if available
-                        if response_json:
-                            st.error(f"Upload failed: {response_json}")
-                        else:
-                            st.error(f"Upload failed: HTTP {response.status_code} - {response.text[:300]}")
+                        st.warning("Backend returned success but no data payload.")
                 else:
-                    st.error("Upload failed (no response).")
+                    if response is not None:
+                        try:
+                            err = response.json()
+                        except Exception:
+                            err = response.text
+                        st.error(f"Upload failed: {err}")
+                    else:
+                        st.error("Upload failed (no response).")
             progress.progress(100)
 
-    # Preview column (narrow)
     with col_preview:
         st.markdown("### Preview")
         if uploaded_file:
@@ -221,7 +227,6 @@ with tab1:
 
     st.markdown("---")
 
-    # Manual form (collapsible)
     with st.expander("📋 Or fill details manually"):
         with st.form("manual_card_form"):
             c1, c2 = st.columns(2)
@@ -242,70 +247,71 @@ with tab1:
                 "name": name,
                 "designation": designation,
                 "company": company,
-                "phone_numbers": phones,
+                "phone_numbers": csv_str_to_list(phones),
                 "email": email,
                 "website": website,
                 "address": address,
-                "social_links": social_links,
+                "social_links": csv_str_to_list(social_links),
                 "more_details": more_details or "",
-                "additional_notes": additional_notes,
+                "additional_notes": additional_notes or "",
             }
             with st.spinner("Saving..."):
                 try:
-                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), timeout=30)
+                    headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
+                    if r.status_code >= 400:
+                        try:
+                            err = r.json()
+                        except Exception:
+                            err = r.text
+                        st.error(f"Failed to create card: {err}")
+                        r = None
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     r = None
 
-                if r:
-                    try:
-                        res_json = r.json()
-                    except Exception:
-                        res_json = None
-
-                    if r.status_code in (200, 201):
-                        if res_json and "data" in res_json:
-                            st.success("Inserted Successfully!")
-                            card = res_json["data"]
-                            card.pop("field_validations", None)
-                            if isinstance(card.get("_id"), dict):
-                                card["_id"] = card["_id"].get("$oid", str(card["_id"]))
-                            df = pd.DataFrame([card]).drop(columns=["_id"], errors="ignore")
-                            st.dataframe(df, use_container_width=True)
-                            st.download_button(
-                                "📥 Download as Excel",
-                                to_excel_bytes(df),
-                                "business_card_manual.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        else:
-                            st.success("Created (no full data returned).")
+                if r and r.status_code in (200, 201):
+                    res = r.json()
+                    created = res.get("data") if isinstance(res, dict) and "data" in res else res
+                    if created:
+                        st.success("Inserted Successfully!")
+                        created_display = dict(created)
+                        created_display["phone_numbers"] = list_to_csv_str(created_display.get("phone_numbers", []))
+                        created_display["social_links"] = list_to_csv_str(created_display.get("social_links", []))
+                        df = pd.DataFrame([created_display]).drop(columns=["_id"], errors="ignore")
+                        st.dataframe(df, use_container_width=True)
+                        st.download_button(
+                            "📥 Download as Excel",
+                            to_excel_bytes(df),
+                            "business_card_manual.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
                     else:
-                        if res_json:
-                            st.error(f"Failed to create card: {res_json}")
-                        else:
-                            st.error(f"Failed to create card: HTTP {r.status_code} - {r.text[:300]}")
+                        st.warning("Created but no data returned.")
                 else:
-                    st.error("Failed to create card (no response).")
+                    if r is not None:
+                        try:
+                            err = r.json()
+                        except Exception:
+                            err = r.text
+                        st.error(f"Failed to create card: {err}")
+                    else:
+                        st.error("Failed to create card (no response).")
 
 # ========================================================================
 # TAB 2 — View & Edit All Cards
 # ========================================================================
 with tab2:
     st.markdown("### All business cards")
-    # Top control row
     top_col1, top_col2 = st.columns([3, 1])
     with top_col1:
         st.info("Edit any column → press **Save Changes** to apply edits to the backend.")
     with top_col2:
-        # Fetch data to calculate download content
         data = fetch_all_cards()
         if data:
-            # Remove backend-only field_validations from download data
             for d in data:
                 d.pop("field_validations", None)
             df_all_for_download = pd.DataFrame(data)
-            # convert lists to CSV strings for Excel
             for col in ["phone_numbers", "social_links"]:
                 if col in df_all_for_download.columns:
                     df_all_for_download[col] = df_all_for_download[col].apply(list_to_csv_str)
@@ -316,55 +322,46 @@ with tab2:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         else:
-            st.write("")  # placeholder for alignment
+            st.write("")
 
-    # Fetch fresh data
     with st.spinner("Fetching all business cards..."):
         data = fetch_all_cards()
 
     if not data:
         st.warning("No cards found.")
     else:
-        # Normalize into DataFrame for editing/display
-        # Remove field_validations from each record to avoid showing it
         for d in data:
             d.pop("field_validations", None)
 
         df_all = pd.DataFrame(data)
 
-        # Ensure all expected columns exist (prevents editor crashing)
         expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
 
-        # Keep a separate list of ids (do NOT show these to the user)
         _ids = df_all["_id"].astype(str).tolist()
 
-        # Convert list columns to CSV strings for display/editing
         display_df = df_all.copy()
         for col in ["phone_numbers", "social_links"]:
             display_df[col] = display_df[col].apply(list_to_csv_str)
 
-        # Drop the _id column from the displayed dataframe so users don't see it
         if "_id" in display_df.columns:
             display_df = display_df.drop(columns=["_id"])
 
-        # Place Save Changes button above the editor
         save_col_left, save_col_mid, save_col_right = st.columns([1, 3, 1])
         with save_col_left:
             save_clicked = st.button("💾 Save Changes")
         with save_col_mid:
-            st.write("")  # spacer
+            st.write("")
         with save_col_right:
-            st.write("")  # spacer
+            st.write("")
 
-        # Use experimental_data_editor if available; fallback to data_editor
         try:
             edited = st.experimental_data_editor(
                 display_df,
                 use_container_width=True,
-                num_rows="fixed",    # prevents adding new rows (no duplicates)
+                num_rows="fixed",
             )
         except Exception:
             edited = st.data_editor(
@@ -373,16 +370,11 @@ with tab2:
                 num_rows="fixed",
             )
 
-        # -----------------------
-        # Persisted drawer implementation using session_state
-        # -----------------------
-        # Ensure session state defaults
         if "drawer_open" not in st.session_state:
             st.session_state["drawer_open"] = False
         if "drawer_row" not in st.session_state:
             st.session_state["drawer_row"] = None
 
-        # Build friendly options list for selectbox
         options = []
         for idx, r in df_all.reset_index(drop=True).iterrows():
             display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
@@ -390,26 +382,20 @@ with tab2:
 
         selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
 
-        # When user clicks to open, persist the chosen row index in session_state
         if st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
             st.session_state["drawer_row"] = sel_idx
 
-        # If drawer_open, render the expander every run (so its buttons can be clicked)
         if st.session_state.get("drawer_open") and st.session_state.get("drawer_row") is not None:
             sel_idx = st.session_state["drawer_row"]
-            # guard in case data changed length
             if sel_idx < 0 or sel_idx >= len(df_all):
                 st.warning("Selected row is no longer available.")
                 st.session_state["drawer_open"] = False
                 st.session_state["drawer_row"] = None
             else:
                 row = df_all.iloc[sel_idx].to_dict()
-
-                # Use a string id for keys and backend calls
                 id_str = str(row.get("_id"))
-
                 title = f"Edit card — {_truncate_name(row.get('name', ''))}"
                 with st.expander(title, expanded=True):
                     c1, c2 = st.columns(2)
@@ -427,22 +413,28 @@ with tab2:
                     col_ok, col_del, col_close = st.columns([1,1,1])
                     with col_ok:
                         if st.button("Save changes", key=f"drawer-save-{id_str}"):
+                            # Convert comma-separated phone/social strings into lists (trim and drop empty)
+                            def _csv_to_list(s: str):
+                                if s is None:
+                                    return []
+                                return [x.strip() for x in str(s).split(",") if x.strip()]
+
                             payload = {
-                                "name": name_m,
-                                "designation": designation_m,
-                                "company": company_m,
-                                "phone_numbers": phones_m,
-                                "email": email_m,
-                                "website": website_m,
-                                "address": address_m,
-                                "social_links": social_m,
-                                "more_details": more_m,
-                                "additional_notes": notes_m,
+                                "name": name_m or None,
+                                "designation": designation_m or None,
+                                "company": company_m or None,
+                                "phone_numbers": _csv_to_list(phones_m),
+                                "email": email_m or None,
+                                "website": website_m or None,
+                                "address": address_m or None,
+                                "social_links": _csv_to_list(social_m),
+                                "more_details": more_m or None,
+                                "additional_notes": notes_m or None,
                             }
+
                             success, msg = patch_card(id_str, payload)
                             if success:
                                 st.success("Updated")
-                                # close drawer and trigger rerun via session_state mutation
                                 st.session_state["drawer_open"] = False
                                 st.session_state["drawer_row"] = None
                                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
@@ -466,7 +458,6 @@ with tab2:
                             st.session_state["drawer_row"] = None
                             st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
 
-        # When Save Changes clicked, iterate rows and diff against original and send PATCHs (uses patch_card)
         if save_clicked:
             updates = 0
             problems = 0
@@ -487,7 +478,7 @@ with tab2:
                             change_set[col] = n
 
                 if change_set:
-                    card_id = _ids[i]   # always track correct MongoDB row
+                    card_id = _ids[i]
                     success, msg = patch_card(card_id, change_set)
                     if success:
                         updates += 1
@@ -497,7 +488,6 @@ with tab2:
 
             if updates > 0:
                 st.success(f"✅ Updated {updates} card(s). Refreshing...")
-                # trigger rerun via session_state mutation
                 st.session_state["refresh_counter"] = st.session_state.get("refresh_counter", 0) + 1
             else:
                 if problems == 0:
