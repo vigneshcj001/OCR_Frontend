@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Tuple
 import streamlit as st
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from io import BytesIO
 
 # ----------------------------
@@ -20,18 +22,54 @@ st.set_page_config(
 if "refresh_counter" not in st.session_state:
     st.session_state["refresh_counter"] = 0
 
-BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000")
+BACKEND = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 FRONTEND_OPENAI_KEY = os.environ.get("FRONTEND_OPENAI_KEY")  # expected to be set in env (.env) so UI doesn't prompt
 
 st.title("📇 Business Card OCR → MongoDB")
 st.write("Upload → Extract OCR (OpenAI required) → Store → Edit → Download")
 
 if not FRONTEND_OPENAI_KEY:
-    st.error("FRONTEND_OPENAI_KEY environment variable is not set. Please set it to a valid OpenAI key (sk-...). The frontend will send this key to the backend for parsing.")
+    st.error(
+        "FRONTEND_OPENAI_KEY environment variable is not set. "
+        "Please set it to a valid OpenAI key (sk-...). The frontend will send this key to the backend for parsing."
+    )
     st.stop()
 
 # ----------------------------
-# Helpers
+# HTTP session & helpers
+# ----------------------------
+def make_session() -> requests.Session:
+    s = requests.Session()
+    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=(429, 502, 503, 504))
+    adapter = HTTPAdapter(max_retries=retries)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    return s
+
+SESSION = make_session()
+DEFAULT_TIMEOUT = 30
+
+
+def backend_headers() -> Dict[str, str]:
+    return {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
+
+
+def safe_request(method: str, path: str, **kwargs) -> requests.Response:
+    url = f"{BACKEND.rstrip('/')}/{path.lstrip('/')}"
+    kwargs.setdefault("timeout", kwargs.pop("timeout", DEFAULT_TIMEOUT))
+    try:
+        resp = SESSION.request(method, url, **kwargs)
+        resp.raise_for_status()
+        return resp
+    except requests.HTTPError:
+        # re-raise so caller can inspect resp if present
+        raise
+    except Exception as e:
+        raise
+
+
+# ----------------------------
+# Utility helpers
 # ----------------------------
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
@@ -39,20 +77,24 @@ def to_excel_bytes(df: pd.DataFrame) -> bytes:
         df.to_excel(writer, index=False)
     return output.getvalue()
 
+
 def list_to_csv_str(v):
     if isinstance(v, list):
         return ", ".join([str(x) for x in v])
     return v if v is not None else ""
+
 
 def csv_str_to_list(s: str):
     if s is None:
         return []
     return [x.strip() for x in str(s).split(",") if x.strip()]
 
+
 def _truncate_name(s: str, length: int = 30) -> str:
     if not s:
         return ""
     return s if len(s) <= length else s[: length - 3] + "..."
+
 
 def _clean_payload_for_backend(payload: dict) -> dict:
     out = {}
@@ -70,47 +112,51 @@ def _clean_payload_for_backend(payload: dict) -> dict:
             out[k] = v
     return out
 
+
+# ----------------------------
+# Backend actions (thin wrappers)
+# ----------------------------
 def fetch_all_cards(timeout=20) -> List[Dict[str, Any]]:
     try:
-        resp = requests.get(f"{BACKEND}/all_cards", timeout=timeout)
-        resp.raise_for_status()
+        resp = safe_request("GET", "/all_cards", timeout=timeout, headers=backend_headers())
         data = resp.json()
         return data.get("data", data) if isinstance(data, dict) else data
     except Exception as e:
         st.error(f"Failed to fetch cards: {e}")
         return []
 
+
 def patch_card(card_id: str, payload: dict, timeout: int = 30) -> Tuple[bool, str]:
     try:
-        card_id = str(card_id)
-        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
-        r = requests.patch(f"{BACKEND}/update_card/{card_id}", json=_clean_payload_for_backend(payload), headers=headers, timeout=timeout)
-        if r.status_code in (200, 201):
-            return True, "Updated"
-        else:
-            try:
-                err = r.json()
-            except Exception:
-                err = r.text
-            return False, f"Failed: {err}"
+        resp = safe_request(
+            "PATCH",
+            f"/update_card/{card_id}",
+            json=_clean_payload_for_backend(payload),
+            headers=backend_headers(),
+            timeout=timeout,
+        )
+        return True, "Updated" if resp.status_code in (200, 201) else (False, resp.text)
+    except requests.HTTPError as he:
+        try:
+            return False, he.response.json()
+        except Exception:
+            return False, str(he)
     except Exception as e:
         return False, str(e)
 
+
 def delete_card(card_id: str, timeout: int = 30) -> Tuple[bool, str]:
     try:
-        card_id = str(card_id)
-        headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
-        r = requests.delete(f"{BACKEND}/delete_card/{card_id}", headers=headers, timeout=timeout)
-        if r.status_code in (200, 204):
-            return True, "Deleted"
-        else:
-            try:
-                err = r.json()
-            except Exception:
-                err = r.text
-            return False, f"Failed to delete: {err}"
+        resp = safe_request("DELETE", f"/delete_card/{card_id}", headers=backend_headers(), timeout=timeout)
+        return True, "Deleted" if resp.status_code in (200, 204) else (False, resp.text)
+    except requests.HTTPError as he:
+        try:
+            return False, he.response.json()
+        except Exception:
+            return False, str(he)
     except Exception as e:
         return False, str(e)
+
 
 # ----------------------------
 # Layout: Tabs
@@ -127,21 +173,23 @@ with tab1:
         st.markdown("### Upload card")
         uploaded_file = st.file_uploader(
             "Drag and drop file here\nLimit 200MB • JPG, JPEG, PNG",
-            type=["jpg", "jpeg", "png"]
+            type=["jpg", "jpeg", "png"],
         )
 
         if uploaded_file:
             progress = st.progress(10)
-            time.sleep(0.08)
+            time.sleep(0.05)
             progress.progress(30)
             with st.spinner("Processing image with OCR and uploading..."):
                 files = {
-                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
+                    "file": (
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                        uploaded_file.type or "application/octet-stream",
+                    )
                 }
-                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
-
                 try:
-                    response = requests.post(f"{BACKEND}/extract", files=files, headers=headers, timeout=120)
+                    response = safe_request("POST", "/extract", files=files, headers=backend_headers(), timeout=120)
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
@@ -180,16 +228,11 @@ with tab1:
                                 "additional_notes": card.get("additional_notes") or "",
                             }
                             try:
-                                headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
-                                r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
+                                r = safe_request("POST", "/create_card", json=_clean_payload_for_backend(payload), headers=backend_headers(), timeout=30)
+                                res2 = r.json()
                                 if r.status_code >= 400:
-                                    try:
-                                        err = r.json()
-                                    except Exception:
-                                        err = r.text
-                                    st.error(f"Failed to create card: {err}")
+                                    st.error(f"Failed to create card: {res2}")
                                 else:
-                                    res2 = r.json()
                                     saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
                                     st.success("Inserted Successfully!")
                                     saved_display = dict(saved)
@@ -201,7 +244,7 @@ with tab1:
                                         "📥 Download as Excel",
                                         to_excel_bytes(df2),
                                         "business_card.xlsx",
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     )
                             except Exception as e:
                                 st.error(f"Failed to reach backend: {e}")
@@ -257,46 +300,29 @@ with tab1:
             }
             with st.spinner("Saving..."):
                 try:
-                    headers = {"Authorization": f"Bearer {FRONTEND_OPENAI_KEY}"} if FRONTEND_OPENAI_KEY else {}
-                    r = requests.post(f"{BACKEND}/create_card", json=_clean_payload_for_backend(payload), headers=headers, timeout=30)
+                    r = safe_request("POST", "/create_card", json=_clean_payload_for_backend(payload), headers=backend_headers(), timeout=30)
+                    res = r.json()
                     if r.status_code >= 400:
-                        try:
-                            err = r.json()
-                        except Exception:
-                            err = r.text
-                        st.error(f"Failed to create card: {err}")
-                        r = None
+                        st.error(f"Failed to create card: {res}")
+                    else:
+                        created = res.get("data") if isinstance(res, dict) and "data" in res else res
+                        if created:
+                            st.success("Inserted Successfully!")
+                            created_display = dict(created)
+                            created_display["phone_numbers"] = list_to_csv_str(created_display.get("phone_numbers", []))
+                            created_display["social_links"] = list_to_csv_str(created_display.get("social_links", []))
+                            df = pd.DataFrame([created_display]).drop(columns=["_id"], errors="ignore")
+                            st.dataframe(df, use_container_width=True)
+                            st.download_button(
+                                "📥 Download as Excel",
+                                to_excel_bytes(df),
+                                "business_card_manual.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
+                        else:
+                            st.warning("Created but no data returned.")
                 except Exception as e:
                     st.error(f"Failed to reach backend: {e}")
-                    r = None
-
-                if r and r.status_code in (200, 201):
-                    res = r.json()
-                    created = res.get("data") if isinstance(res, dict) and "data" in res else res
-                    if created:
-                        st.success("Inserted Successfully!")
-                        created_display = dict(created)
-                        created_display["phone_numbers"] = list_to_csv_str(created_display.get("phone_numbers", []))
-                        created_display["social_links"] = list_to_csv_str(created_display.get("social_links", []))
-                        df = pd.DataFrame([created_display]).drop(columns=["_id"], errors="ignore")
-                        st.dataframe(df, use_container_width=True)
-                        st.download_button(
-                            "📥 Download as Excel",
-                            to_excel_bytes(df),
-                            "business_card_manual.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                    else:
-                        st.warning("Created but no data returned.")
-                else:
-                    if r is not None:
-                        try:
-                            err = r.json()
-                        except Exception:
-                            err = r.text
-                        st.error(f"Failed to create card: {err}")
-                    else:
-                        st.error("Failed to create card (no response).")
 
 # ========================================================================
 # TAB 2 — View & Edit All Cards
@@ -319,7 +345,7 @@ with tab2:
                 "📥 Download All as Excel",
                 to_excel_bytes(df_all_for_download.drop(columns=["_id"], errors="ignore")),
                 "all_business_cards.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet",
             )
         else:
             st.write("")
@@ -335,7 +361,21 @@ with tab2:
 
         df_all = pd.DataFrame(data)
 
-        expected_cols = ["_id", "name", "designation", "company", "phone_numbers", "email", "website", "address", "social_links", "more_details", "additional_notes", "created_at", "edited_at"]
+        expected_cols = [
+            "_id",
+            "name",
+            "designation",
+            "company",
+            "phone_numbers",
+            "email",
+            "website",
+            "address",
+            "social_links",
+            "more_details",
+            "additional_notes",
+            "created_at",
+            "edited_at",
+        ]
         for c in expected_cols:
             if c not in df_all.columns:
                 df_all[c] = ""
@@ -358,17 +398,9 @@ with tab2:
             st.write("")
 
         try:
-            edited = st.experimental_data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-            )
+            edited = st.experimental_data_editor(display_df, use_container_width=True, num_rows="fixed")
         except Exception:
-            edited = st.data_editor(
-                display_df,
-                use_container_width=True,
-                num_rows="fixed",
-            )
+            edited = st.data_editor(display_df, use_container_width=True, num_rows="fixed")
 
         if "drawer_open" not in st.session_state:
             st.session_state["drawer_open"] = False
@@ -402,18 +434,26 @@ with tab2:
                     name_m = c1.text_input("Full name", value=row.get("name", ""), key=f"name-{id_str}")
                     designation_m = c2.text_input("Designation", value=row.get("designation", ""), key=f"desig-{id_str}")
                     company_m = c1.text_input("Company", value=row.get("company", ""), key=f"company-{id_str}")
-                    phones_m = c2.text_input("Phone numbers (comma separated)", value=list_to_csv_str(row.get("phone_numbers", "")), key=f"phones-{id_str}")
+                    phones_m = c2.text_input(
+                        "Phone numbers (comma separated)",
+                        value=list_to_csv_str(row.get("phone_numbers", "")),
+                        key=f"phones-{id_str}",
+                    )
                     email_m = c1.text_input("Email", value=row.get("email", ""), key=f"email-{id_str}")
                     website_m = c2.text_input("Website", value=row.get("website", ""), key=f"website-{id_str}")
                     address_m = st.text_area("Address", value=row.get("address", ""), key=f"address-{id_str}")
-                    social_m = st.text_input("Social links (comma separated)", value=list_to_csv_str(row.get("social_links", "")), key=f"social-{id_str}")
+                    social_m = st.text_input(
+                        "Social links (comma separated)",
+                        value=list_to_csv_str(row.get("social_links", "")),
+                        key=f"social-{id_str}",
+                    )
                     more_m = st.text_area("More details", value=row.get("more_details", ""), key=f"more-{id_str}")
                     notes_m = st.text_area("Notes", value=row.get("additional_notes", ""), key=f"notes-{id_str}")
 
-                    col_ok, col_del, col_close = st.columns([1,1,1])
+                    col_ok, col_del, col_close = st.columns([1, 1, 1])
                     with col_ok:
                         if st.button("Save changes", key=f"drawer-save-{id_str}"):
-                            # Convert comma-separated phone/social strings into lists (trim and drop empty)
+
                             def _csv_to_list(s: str):
                                 if s is None:
                                     return []
