@@ -1,4 +1,3 @@
-# streamlit_frontend.py
 import os
 import time
 from typing import Any, Dict, List, Tuple
@@ -194,10 +193,26 @@ with tab1:
                     st.error(f"Failed to reach backend: {e}")
                     response = None
 
+                # Defensive display: sanitize backend JSON before rendering
                 if response is not None:
                     st.write(f"Backend status: {response.status_code}")
                     try:
-                        st.json(response.json())
+                        resp_json = response.json()
+                        # If wrapper exists, sanitize inner 'data'
+                        if isinstance(resp_json, dict) and "data" in resp_json and isinstance(resp_json["data"], dict):
+                            inner = dict(resp_json["data"])
+                            for remove_key in ("confidence_notes", "extra", "raw_text"):
+                                inner.pop(remove_key, None)
+                            sanitized = dict(resp_json)
+                            sanitized["data"] = inner
+                            st.json(sanitized)
+                        elif isinstance(resp_json, dict):
+                            sanitized = dict(resp_json)
+                            for remove_key in ("confidence_notes", "extra", "raw_text"):
+                                sanitized.pop(remove_key, None)
+                            st.json(sanitized)
+                        else:
+                            st.text(resp_json)
                     except Exception:
                         st.text(response.text)
 
@@ -208,6 +223,10 @@ with tab1:
                     if card:
                         st.success("Extracted — review and save below")
                         card_display = dict(card)
+                        # Remove any internal/debug fields, just in case
+                        for remove_key in ("confidence_notes", "extra", "raw_text"):
+                            card_display.pop(remove_key, None)
+
                         card_display["phone_numbers"] = list_to_csv_str(card_display.get("phone_numbers", []))
                         card_display["social_links"] = list_to_csv_str(card_display.get("social_links", []))
 
@@ -236,6 +255,8 @@ with tab1:
                                     saved = res2.get("data") if isinstance(res2, dict) and "data" in res2 else res2
                                     st.success("Inserted Successfully!")
                                     saved_display = dict(saved)
+                                    for remove_key in ("confidence_notes", "extra", "raw_text"):
+                                        saved_display.pop(remove_key, None)
                                     saved_display["phone_numbers"] = list_to_csv_str(saved_display.get("phone_numbers", []))
                                     saved_display["social_links"] = list_to_csv_str(saved_display.get("social_links", []))
                                     df2 = pd.DataFrame([saved_display]).drop(columns=["_id"], errors="ignore")
@@ -309,6 +330,8 @@ with tab1:
                         if created:
                             st.success("Inserted Successfully!")
                             created_display = dict(created)
+                            for remove_key in ("confidence_notes", "extra", "raw_text"):
+                                created_display.pop(remove_key, None)
                             created_display["phone_numbers"] = list_to_csv_str(created_display.get("phone_numbers", []))
                             created_display["social_links"] = list_to_csv_str(created_display.get("social_links", []))
                             df = pd.DataFrame([created_display]).drop(columns=["_id"], errors="ignore")
@@ -336,7 +359,11 @@ with tab2:
         data = fetch_all_cards()
         if data:
             for d in data:
+                # Remove internal/debugging fields before showing or exporting
                 d.pop("field_validations", None)
+                d.pop("confidence_notes", None)
+                d.pop("extra", None)
+                d.pop("raw_text", None)
             df_all_for_download = pd.DataFrame(data)
             for col in ["phone_numbers", "social_links"]:
                 if col in df_all_for_download.columns:
@@ -345,7 +372,7 @@ with tab2:
                 "📥 Download All as Excel",
                 to_excel_bytes(df_all_for_download.drop(columns=["_id"], errors="ignore")),
                 "all_business_cards.xlsx",
-                mime="application/vnd.openxmlformats-officedocument-spreadsheetml.sheet",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         else:
             st.write("")
@@ -358,6 +385,9 @@ with tab2:
     else:
         for d in data:
             d.pop("field_validations", None)
+            d.pop("confidence_notes", None)
+            d.pop("extra", None)
+            d.pop("raw_text", None)
 
         df_all = pd.DataFrame(data)
 
@@ -412,9 +442,14 @@ with tab2:
             display_name = r.get("name") or r.get("company") or r.get("email") or f"Row {idx}"
             options.append(f"{idx} — {display_name}")
 
-        selected = st.selectbox("Select a row to edit", options, index=0, help="Pick a contact to open the edit drawer")
+        # default to first index if available
+        selected_index = 0 if options else None
+        if options:
+            selected = st.selectbox("Select a row to edit", options, index=selected_index, help="Pick a contact to open the edit drawer")
+        else:
+            selected = None
 
-        if st.button("Open selected row in drawer"):
+        if selected and st.button("Open selected row in drawer"):
             sel_idx = int(selected.split("—", 1)[0].strip())
             st.session_state["drawer_open"] = True
             st.session_state["drawer_row"] = sel_idx
